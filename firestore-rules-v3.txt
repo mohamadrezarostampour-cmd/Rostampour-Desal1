@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- توابع کمکی ----------
+    function signedIn() { return request.auth != null && request.auth.token.email != null; }
+    function isAdmin() { return signedIn() && request.auth.token.email == 'rostampour@rostampour-system.local'; }
+    function uname() { return request.auth.token.email.split('@')[0]; }
+    function profPath() { return /databases/$(database)/documents/app_users/$(uname()); }
+    function activeUser() { return signedIn() && exists(profPath()) && get(profPath()).data.active == true; }
+    function isOperator() { return activeUser() && get(profPath()).data.role == 'operator'; }
+    function canRead()  { return isAdmin() || activeUser(); }          // مدیر، اپراتور و مشاهده‌گر فعال
+    function canDaily() { return isAdmin() || isOperator(); }          // ثبت روزانه
+
+    // ---------- کاربران ----------
+    match /app_users/{u} {
+      allow read: if isAdmin() || (signedIn() && uname() == u);
+      allow write: if isAdmin();
+    }
+
+    // ---------- فقط مدیر می‌نویسد، همه کاربران فعال می‌خوانند ----------
+    match /tariffs/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /meterTypes/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /routes/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /consumers/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /settings/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /wh_meta/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /cmm_equipment/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /cmm_pm/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /cmm_cm/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /cmm_meta/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /cmm_history/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /sw_equipment/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /sw_pm/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /sw_cm/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /ds_equipment/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /ds_pm/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /ds_cm/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+    match /ds_wo/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+
+    // ---------- ثبت روزانه: اپراتور می‌تواند ثبت/ویرایش کند، حذف فقط مدیر ----------
+    match /cmm_tanks/{id} { allow read: if canRead(); allow create, update: if canDaily(); allow delete: if isAdmin(); }
+    match /cmm_plants/{id} { allow read: if canRead(); allow create, update: if canDaily(); allow delete: if isAdmin(); }
+    match /cmm_pumping/{id} { allow read: if canRead(); allow create, update: if canDaily(); allow delete: if isAdmin(); }
+    match /sw_daily/{id} { allow read: if canRead(); allow create, update: if canDaily(); allow delete: if isAdmin(); }
+    match /ds_daily/{id} { allow read: if canRead(); allow create, update: if canDaily(); allow delete: if isAdmin(); }
+    // قرائت کنتور: اپراتور فقط ثبت جدید
+    match /readings/{id} { allow read: if canRead(); allow create: if canDaily(); allow update, delete: if isAdmin(); }
+
+    // ---------- لاگ‌ها: ثبت توسط مدیر/اپراتور، مشاهده فقط مدیر ----------
+    match /auditLogs/{id} { allow read: if isAdmin(); allow create: if canDaily(); allow update, delete: if isAdmin(); }
+    match /cmm_activitylog/{id} { allow read: if isAdmin(); allow create: if canDaily(); allow update, delete: if isAdmin(); }
+    match /sw_log/{id} { allow read: if isAdmin(); allow create: if canDaily(); allow update, delete: if isAdmin(); }
+    match /ds_log/{id} { allow read: if isAdmin(); allow create: if canDaily(); allow update, delete: if isAdmin(); }
+  }
+}
