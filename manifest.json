@@ -2,6 +2,7 @@
   "name": "Rostampour SWRO NV - کارخانه آب‌شیرین‌کن ۱",
   "short_name": "SWRO NV",
   "description": "سامانه مستقل کارخانه آب‌شیرین‌کن ۱: تجهیزات، بازدید، تعمیرات، دستورکار، کیفیت آب، مواد شیمیایی و گزارش‌ها",
+  "id": "./swro-nv",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
