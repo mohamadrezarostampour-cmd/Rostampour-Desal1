@@ -407,10 +407,14 @@ function activateMode(id){
 
 /* ---------------- navigation from alerts / search ---------------- */
 const pendingNav = {};
+/* a scanned equipment QR opens index.html?eq=<id> → after sign-in the plant shows that equipment's dossier */
+const QR_EQ = (() => { try { return new URLSearchParams(location.search).get('eq') || ''; } catch (e) { return ''; } })();
+if (QR_EQ) pendingNav['desal'] = { view: 'passport', q: QR_EQ, t: Date.now() };
 function sendNav(id){
   const w = document.getElementById('wrap-' + id), f = w && w.querySelector('iframe');
   if (!f || !pendingNav[id]) return;
   try { f.contentWindow.postMessage({ rostampourNav: pendingNav[id] }, '*'); } catch(e){}
+  if (pendingNav[id] && pendingNav[id].view === 'passport') { delete pendingNav[id]; try { history.replaceState(null, '', location.pathname); } catch(e){} }
 }
 function navigateTo(modeId, view, q){
   if (!MODES.find(m => m.id === modeId)) return;
@@ -425,9 +429,10 @@ window.getLang = () => lang;
 const syncState = {};
 function refreshSyncChip(){
   const chip = document.getElementById('syncChip');
-  const pend = Object.values(syncState).some(Boolean);
-  if (!navigator.onLine) { chip.className = 'sync-chip off'; chip.textContent = lang === 'fa' ? 'آفلاین' + (pend ? ' · تغییرات در صف' : '') : 'Offline' + (pend ? ' · changes queued' : ''); }
-  else if (pend) { chip.className = 'sync-chip pend'; chip.textContent = lang === 'fa' ? 'در حال همگام‌سازی…' : 'Syncing…'; }
+  const n = Object.values(syncState).reduce((a, b) => a + (+b || 0), 0), pend = n > 0;
+  const fd = (v) => lang === 'fa' ? String(v).replace(/[0-9]/g, d => '۰۱۲۳۴۵۶۷۸۹'[d]) : String(v);
+  if (!navigator.onLine) { chip.className = 'sync-chip off'; chip.textContent = lang === 'fa' ? 'آفلاین' + (pend ? ' · ' + fd(n) + ' ثبت در صف ارسال' : '') : 'Offline' + (pend ? ' · ' + n + ' queued' : ''); }
+  else if (pend) { chip.className = 'sync-chip pend'; chip.textContent = lang === 'fa' ? 'در حال همگام‌سازی… (' + fd(n) + ' ثبت)' : 'Syncing… (' + n + ')'; }
   else { chip.className = 'sync-chip'; chip.textContent = ''; }
 }
 window.addEventListener('online', refreshSyncChip); window.addEventListener('offline', refreshSyncChip);
@@ -435,7 +440,7 @@ window.addEventListener('online', refreshSyncChip); window.addEventListener('off
 /* ---------------- messages from modules (they may toggle theme/lang themselves) ---------------- */
 window.addEventListener('message', ev => {
   const d = ev.data || {};
-  if (d.rostampourSync) { syncState[d.rostampourSync.src || '?'] = !!d.rostampourSync.pending; refreshSyncChip(); }
+  if (d.rostampourSync) { syncState[d.rostampourSync.src || '?'] = d.rostampourSync.count != null ? d.rostampourSync.count : (d.rostampourSync.pending ? 1 : 0); refreshSyncChip(); }
   if (d.rostampourReady) { sendNav(d.rostampourReady); }
   if (d.rostampourTheme === 'light' || d.rostampourTheme === 'dark') {
     document.body.classList.toggle('dark-theme', d.rostampourTheme === 'dark');

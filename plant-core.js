@@ -8,7 +8,7 @@
    ========================================================================= */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, enableNetwork } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyD3BGGIX2B104SdhML7eoxcvl3CjKGfXw4",
@@ -66,7 +66,8 @@ const ICON = {
   list: '<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 8v5l3 2"/>',
   sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
-  doc: '<path d="M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6"/>'
+  doc: '<path d="M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l5 5"/>'
 };
 const svg = (k, s) => `<svg width="${s || 17}" height="${s || 17}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg>`;
 
@@ -83,7 +84,6 @@ export function startPlant(spec) {
   const SP = window.SWRO_PFD, HL = window.SWRO_HEALTH;
   const COLS = ['daily', 'equipment', 'pm', 'cm', 'log'].concat(spec.workOrders ? ['wo'] : []);
   const S = { daily: [], equipment: [], pm: [], cm: [], wo: [], log: [], view: 'dashboard', ready: false, online: true, alerts: {} };
-  const PEND = {};
   const UI = { charts: {}, an: { scope: null, mode: 'monthly', jy: curJY(), jm: isoToJ(todayISO()).month }, search: {}, filters: {} };
   let unsubs = [];
 
@@ -96,7 +96,7 @@ export function startPlant(spec) {
   const roleNow = () => (window.Role ? window.Role.forUser(auth.currentUser) : null);
   const isAdminR = () => roleNow() === 'admin';
   const canDailyR = () => { const r = roleNow(); return r === 'admin' || r === 'operator'; };
-  const allowedView = (v) => { const r = roleNow(); if (r === 'admin') return true; if (r === 'operator') return ['dashboard', 'stage', 'health', 'entry', 'equipment', 'pm', 'cm', 'wo'].includes(v); if (r === 'viewer') return ['dashboard', 'stage', 'health', 'equipment', 'pm', 'cm', 'wo'].includes(v); return false; };
+  const allowedView = (v) => { const r = roleNow(); if (r === 'admin') return true; if (r === 'operator') return ['dashboard', 'stage', 'health', 'entry', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); if (r === 'viewer') return ['dashboard', 'stage', 'health', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); return false; };
   const guard = (n, kind) => {
     const r = roleNow();
     if (r === 'admin') return;
@@ -105,33 +105,68 @@ export function startPlant(spec) {
   };
   /* offline: Firestore applies the write locally at once and syncs later, but the promise only resolves on server
      acknowledgement — do not keep the UI waiting forever */
-  const quick = (p) => Promise.race([p, new Promise((res) => setTimeout(res, 4500))]);
-  const fbAdd = (n, data) => { guard(n, 'add'); return quick(addDoc(colRef(n), JSON.parse(JSON.stringify(data)))); };
-  const fbSet = (n, id, data) => { guard(n, 'set'); return quick(setDoc(doc(db, P + n, id), JSON.parse(JSON.stringify(data)), { merge: true })); };
-  const fbUpd = (n, id, data) => { guard(n, 'upd'); return quick(updateDoc(doc(db, P + n, id), JSON.parse(JSON.stringify(data)))); };
-  const fbDel = (n, id) => { guard(n, 'del'); return quick(deleteDoc(doc(db, P + n, id))); };
-  const postSync = () => { try { parent.postMessage({ rostampourSync: { src: spec.id, pending: Object.values(PEND).some(Boolean) } }, '*'); } catch (e) { } };
+  const quick = (p) => Promise.race([p, new Promise((res) => setTimeout(res, navigator.onLine ? 4500 : 60))]);
+
+  /* ---- offline queue: every write that the server has not acknowledged yet ---- */
+  const PENDING = new Map();   // "col/id" -> { n, id, op, title, at, src:'w' (this session) | 's' (found in the local cache after a reload) }
+  const COL_LABEL = { daily: ['ثبت روزانه', 'Daily entry'], equipment: ['تجهیز', 'Equipment'], pm: ['بازدید دوره‌ای', 'Inspection'], cm: ['تعمیر / خرابی', 'Repair'], wo: ['دستورکار', 'Work order'], log: ['لاگ فعالیت', 'Activity log'] };
+  const OP_LABEL = { add: ['ثبت جدید', 'New'], set: ['ثبت', 'Save'], upd: ['ویرایش', 'Edit'], del: ['حذف', 'Delete'] };
+  const recTitle = (n, d) => { d = d || {}; return String(d.title || d.issue || d.description || d.name || d.action || d.date || d.no || '').slice(0, 80); };
+  let pendTimer = null;
+  function pendUI() { clearTimeout(pendTimer); pendTimer = setTimeout(() => { setStatus(); postSync(); }, 40); }
+  function track(n, id, op, data, p) {
+    const k = n + '/' + id;
+    PENDING.set(k, { n, id, op, title: recTitle(n, data), at: new Date().toISOString(), src: 'w' });
+    pendUI();
+    if (!navigator.onLine) setTimeout(() => toast(L('روی همین دستگاه ذخیره شد — با برقراری اینترنت خودکار ارسال می‌شود', 'Saved on this device — it will be sent automatically when you are back online')), 450);
+    const fin = () => { PENDING.delete(k); pendUI(); };
+    p.then(fin, (e) => { fin(); console.error('write failed', n, e); toast(L('ثبت نشد؛ دسترسی یا اتصال را بررسی کنید', 'Not saved — check access or connection')); });
+    return p;
+  }
+  const fbAdd = (n, data) => { guard(n, 'add'); const d = JSON.parse(JSON.stringify(data)), ref = doc(colRef(n)); return quick(track(n, ref.id, 'add', d, setDoc(ref, d))); };
+  const fbSet = (n, id, data) => { guard(n, 'set'); const d = JSON.parse(JSON.stringify(data)); return quick(track(n, id, 'set', d, setDoc(doc(db, P + n, id), d, { merge: true }))); };
+  const fbUpd = (n, id, data) => { guard(n, 'upd'); const d = JSON.parse(JSON.stringify(data)); const cur = (S[n] || []).find(x => x.id === id); return quick(track(n, id, 'upd', Object.assign({}, cur, d), updateDoc(doc(db, P + n, id), d))); };
+  const fbDel = (n, id) => { guard(n, 'del'); const cur = (S[n] || []).find(x => x.id === id); return quick(track(n, id, 'del', cur, deleteDoc(doc(db, P + n, id)))); };
+  const postSync = () => { try { parent.postMessage({ rostampourSync: { src: spec.id, pending: PENDING.size > 0, count: PENDING.size } }, '*'); } catch (e) { } };
   let renderTimer = null;
   const scheduleRender = () => { clearTimeout(renderTimer); renderTimer = setTimeout(() => { if (S.ready) renderCurrent(); }, 80); };
   function attach() {
     unsubs.forEach(u => { try { u(); } catch (e) { } }); unsubs = [];
     COLS.forEach(n => {
       unsubs.push(onSnapshot(colRef(n), (snap) => {
-        const arr = []; snap.forEach(d => arr.push(Object.assign({ id: d.id }, d.data())));
-        const pend = !!snap.metadata.hasPendingWrites; if (PEND[n] !== pend) { PEND[n] = pend; postSync(); }
+        const arr = []; let ch = false;
+        snap.forEach(d => {
+          const rec = Object.assign({ id: d.id }, d.data()); arr.push(rec);
+          const k = n + '/' + d.id, pw = !!(d.metadata && d.metadata.hasPendingWrites), e = PENDING.get(k);
+          if (pw && !e) { PENDING.set(k, { n, id: d.id, op: 'upd', title: recTitle(n, rec), at: rec.createdAt || '', src: 's' }); ch = true; }
+          else if (!pw && e && e.src === 's') { PENDING.delete(k); ch = true; }
+        });
+        if (ch) pendUI();
         S[n] = arr; S.online = true; setStatus(); scheduleRender();
       }, (err) => { console.error('snapshot', n, err); S.online = false; setStatus(); }));
     });
     unsubs.push(onSnapshot(doc(db, 'settings', 'alerts'), (s) => { S.alerts = s.exists() ? s.data() : {}; scheduleRender(); }, () => { }));
   }
+  function pendModal() {
+    const fa = isFa(), rows = [...PENDING.values()].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    modal(L('ثبت‌های در انتظار ارسال', 'Changes waiting to be sent'),
+      `<div class="pend-note">${navigator.onLine ? L('اتصال اینترنت برقرار است؛ ثبت‌های زیر در حال ارسال به سرور هستند.', 'You are online — the changes below are being sent to the server.') : L('اینترنت (یا VPN) قطع است. ثبت‌های زیر روی همین دستگاه نگهداری می‌شوند و با برقراری اتصال خودکار ارسال می‌شوند.', 'You are offline (or the VPN is down). The changes below are kept on this device and will be sent automatically when the connection returns.')}</div>
+      ${rows.length ? `<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>${L('بخش', 'Section')}</th><th>${L('عملیات', 'Action')}</th><th>${L('شرح', 'Description')}</th></tr></thead><tbody>${rows.map(r => `<tr><td>${esc((COL_LABEL[r.n] || [r.n, r.n])[fa ? 0 : 1])}</td><td>${esc((OP_LABEL[r.op] || OP_LABEL.upd)[fa ? 0 : 1])}</td><td>${esc(r.title || '—')}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty"><h4>${L('هیچ ثبتی در انتظار ارسال نیست ✓', 'Nothing is waiting ✓')}</h4></div>`}
+      <div style="margin-top:12px"><button class="btn btn-sm" id="pendRetry">⟳ ${L('بررسی اتصال و ارسال مجدد', 'Check connection & retry')}</button></div>
+      <p style="color:var(--text-muted);font-size:12px;margin-top:10px">${L('تا زمانی که این فهرست خالی نشده، حافظهٔ مرورگر (کش/اطلاعات سایت) را پاک نکنید.', 'Do not clear the browser data (cache / site data) until this list is empty.')}</p>`, null);
+    const b = document.getElementById('pendRetry'); if (b) b.onclick = async () => { try { await enableNetwork(db); } catch (e) { } toast(navigator.onLine ? L('در حال ارسال…', 'Sending…') : L('هنوز آفلاین است', 'Still offline')); setTimeout(() => { setStatus(); }, 1500); };
+  }
+  window.addEventListener('online', () => { try { enableNetwork(db); } catch (e) { } setStatus(); });
+  window.addEventListener('offline', () => setStatus());
   function setStatus() {
     const dot = document.getElementById('stDot'), tx = document.getElementById('stTxt');
+    const n = PENDING.size, chip = document.getElementById('pendChip');
+    if (chip) { chip.style.display = n ? '' : 'none'; chip.classList.toggle('off', !navigator.onLine); chip.textContent = '⏳ ' + D(n) + ' ' + L('ثبت در انتظار ارسال', 'waiting to be sent'); }
     if (!dot) return;
-    const pend = Object.values(PEND).some(Boolean);
-    dot.className = 'dot-live' + (S.online && !pend && navigator.onLine ? '' : ' off');
-    tx.textContent = !navigator.onLine ? L('آفلاین — تغییرات در صف همگام‌سازی', 'Offline — changes are queued') : pend ? L('در حال همگام‌سازی…', 'Syncing…') : S.online ? L('داده‌ها به‌صورت آنلاین ذخیره می‌شود', 'Data is stored online') : L('اتصال به حافظه آنلاین برقرار نیست', 'Online storage not reachable');
+    dot.className = 'dot-live' + (S.online && !n && navigator.onLine ? '' : ' off');
+    tx.textContent = !navigator.onLine ? (n ? L('آفلاین — ', 'Offline — ') + D(n) + L(' ثبت در صف ارسال', ' changes queued') : L('آفلاین — تغییرات در صف همگام‌سازی', 'Offline — changes are queued')) : n ? L('در حال همگام‌سازی… (', 'Syncing… (') + D(n) + L(' ثبت)', ' pending)') : S.online ? L('داده‌ها به‌صورت آنلاین ذخیره می‌شود', 'Data is stored online') : L('اتصال به حافظه آنلاین برقرار نیست', 'Online storage not reachable');
   }
-  async function logAct(action, detail) { try { await fbAdd('log', { at: new Date().toISOString(), action, detail: detail || '' }); } catch (e) { } }
+  async function logAct(action, detail) { try { await fbAdd('log', { at: new Date().toISOString(), action, detail: detail || '', by: (window.Role && window.Role.user && window.Role.user()) || '' }); } catch (e) { } }
 
   /* ---------------- toast / modal ---------------- */
   function toast(msg) {
@@ -185,7 +220,8 @@ export function startPlant(spec) {
     ['limits', 'sliders', ['حدود مجاز پارامترها', 'Parameter limits']],
     ['equipment', 'gear', ['تجهیزات', 'Equipment']],
     ['pm', 'cal', ['بازدید دوره‌ای', 'Periodic inspections']],
-    ['cm', 'wrench', ['تعمیرات و خرابی‌ها', 'Repairs & failures']]
+    ['cm', 'wrench', ['تعمیرات و خرابی‌ها', 'Repairs & failures']],
+    ['msearch', 'search', ['مرکز جستجو و کارنامه', 'Search centre & work record']]
   ];
   if (spec.workOrders) NAV.push(['wo', 'list', ['دستورکار', 'Work orders']]);
   NAV.push(['log', 'clock', ['لاگ فعالیت', 'Activity log']]);
@@ -206,13 +242,14 @@ export function startPlant(spec) {
       <div class="scrim" id="scrim"></div>
       <div class="main">
         <div class="topbar"><div style="display:flex;align-items:center;gap:12px;"><button class="menu-btn" id="menuBtn">☰</button>
-          <div><h1 id="pgTitle"></h1><div class="sub" id="pgSub"></div></div></div></div>
+          <div><h1 id="pgTitle"></h1><div class="sub" id="pgSub"></div></div></div><button class="pend-chip" id="pendChip" type="button" style="display:none"></button></div>
         <div class="content" id="content"></div>
       </div></div>
       <div class="overlay" id="overlay"><div class="modal"></div></div><div class="toast" id="toast"></div>`;
     root.querySelectorAll('.nav-item').forEach(n => n.onclick = () => go(n.dataset.view));
     document.getElementById('menuBtn').onclick = () => { document.getElementById('sidebar').classList.add('open'); document.getElementById('scrim').classList.add('show'); };
     document.getElementById('scrim').onclick = closeSide;
+    document.getElementById('pendChip').onclick = pendModal;
     setStatus();
   }
   function closeSide() { document.getElementById('sidebar').classList.remove('open'); document.getElementById('scrim').classList.remove('show'); }
@@ -224,7 +261,7 @@ export function startPlant(spec) {
     c.querySelectorAll('.rk-exportbar').forEach(el => el.remove());
     if (S.view === 'entry') { c.querySelectorAll('[data-d]').forEach(el => el.remove()); return; }
     if (S.view === 'stage' || S.view === 'dashboard') return;
-    c.querySelectorAll('#add').forEach(el => el.remove());
+    c.querySelectorAll('#add, #lbl').forEach(el => el.remove());
     const hasActions = !!c.querySelector('.row-actions');
     c.querySelectorAll('.row-actions').forEach(el => { const td = el.closest('td'); (td || el).remove(); });
     if (hasActions) c.querySelectorAll('thead tr').forEach(tr => { const th = tr.lastElementChild; if (th && th.tagName === 'TH' && !th.textContent.trim()) th.remove(); });
@@ -232,7 +269,7 @@ export function startPlant(spec) {
   function renderCurrent() {
     if (!allowedView(S.view)) S.view = 'dashboard';
     destroyCharts();
-    const f = { dashboard: vDash, stage: vStage, health: vHealth, qreport: vQReport, limits: vLimits, entry: vEntry, reports: vReports, equipment: vEquip, pm: vPm, cm: vCm, wo: vWo, log: vLog }[S.view];
+    const f = { dashboard: vDash, stage: vStage, health: vHealth, qreport: vQReport, limits: vLimits, entry: vEntry, reports: vReports, equipment: vEquip, pm: vPm, cm: vCm, wo: vWo, msearch: vMs, passport: vPassport, log: vLog }[S.view];
     if (!f) return;
     f(document.getElementById('content'));
     lockUI(document.getElementById('content'));
@@ -1021,13 +1058,17 @@ export function startPlant(spec) {
     setTitle(L('تجهیزات', 'Equipment'), L('فهرست تجهیزات و ماشین‌آلات', 'Register of equipment and machinery'));
     const q = (UI.search.eq || '').toLowerCase(), cat = UI.filters.eqCat || '';
     const rows = S.equipment.filter(e => (!cat || e.category === cat) && (!q || (e.name + (e.serial || '') + (e.location || '')).toLowerCase().includes(q))).sort((a, b) => a.name.localeCompare(b.name));
-    c.innerHTML = `<div class="toolbar"><button class="btn btn-primary" id="add">＋ ${L('افزودن تجهیز', 'Add equipment')}</button>
+    c.innerHTML = `<div class="toolbar"><button class="btn btn-primary" id="add">＋ ${L('افزودن تجهیز', 'Add equipment')}</button><button class="btn" id="lbl">▦ ${L('چاپ برچسب‌های QR', 'Print QR labels')}</button>
       <div class="search">🔍<input id="q" placeholder="${L('جستجو...', 'Search...')}" value="${esc(UI.search.eq || '')}"></div>
       <select id="cat"><option value="">${L('همه دسته‌ها', 'All categories')}</option>${spec.categories.map(k => `<option value="${k.key}" ${cat === k.key ? 'selected' : ''}>${esc(lab(k))}</option>`).join('')}</select><div id="exp">${RK.exportBarHTML()}</div></div>
-      <div class="card" style="padding:0"><div class="table-wrap" style="border:none"><table><thead><tr><th>${L('دسته', 'Category')}</th><th>${L('نام تجهیز', 'Name')}</th><th>${L('شماره سریال / پلاک', 'Serial / tag')}</th><th>${L('محل نصب', 'Location')}</th><th>${L('تاریخ نصب', 'Install date')}</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(e => `<tr><td><span class="tag tag-blue">${esc(catLab(e.category))}</span></td><td class="cell-strong">${esc(e.name)}</td><td class="cell-mono">${esc(e.serial || '—')}</td><td>${esc(e.location || '—')}</td><td class="cell-mono">${e.installDate ? jStr(e.installDate) : '—'}</td>
-        <td><div class="row-actions"><span class="icon-sm" data-e="${e.id}">✎</span><span class="icon-sm" data-d="${e.id}">🗑</span></div></td></tr>`).join('') : `<tr><td colspan="6"><div class="empty"><h4>${L('تجهیزی ثبت نشده است', 'No equipment yet')}</h4><p>${L('با دکمه «افزودن تجهیز» شروع کنید.', 'Start with “Add equipment”.')}</p></div></td></tr>`}</tbody></table></div></div>`;
+      <div class="card" style="padding:0"><div class="table-wrap" style="border:none"><table><thead><tr><th>${L('دسته', 'Category')}</th><th>${L('نام تجهیز', 'Name')}</th><th>${L('شماره سریال / پلاک', 'Serial / tag')}</th><th>${L('محل نصب', 'Location')}</th><th>${L('تاریخ نصب', 'Install date')}</th><th>${L('شناسنامه', 'Dossier')}</th><th></th></tr></thead>
+      <tbody>${rows.length ? rows.map(e => `<tr><td><span class="tag tag-blue">${esc(catLab(e.category))}</span> ${discTag(SS.discOfEq(e))}</td><td class="cell-strong">${esc(e.name)}</td><td class="cell-mono">${esc(e.serial || '—')}</td><td>${esc(e.location || '—')}</td><td class="cell-mono">${e.installDate ? jStr(e.installDate) : '—'}</td>
+        <td><button class="btn btn-sm" data-pp="${e.id}">📄 ${L('سوابق', 'History')}</button></td>
+        <td><div class="row-actions"><span class="icon-sm" data-qr="${e.id}" title="QR">▦</span><span class="icon-sm" data-e="${e.id}">✎</span><span class="icon-sm" data-d="${e.id}">🗑</span></div></td></tr>`).join('') : `<tr><td colspan="8"><div class="empty"><h4>${L('تجهیزی ثبت نشده است', 'No equipment yet')}</h4><p>${L('با دکمه «افزودن تجهیز» شروع کنید.', 'Start with “Add equipment”.')}</p></div></td></tr>`}</tbody></table></div></div>`;
     document.getElementById('add').onclick = () => equipForm(null);
+    document.getElementById('lbl').onclick = () => modal(L('چاپ برچسب‌های QR', 'Print QR labels'), `<p style="font-size:13px">${L('برچسب QR برای ' + D(rows.length) + ' تجهیزِ فهرست فعلی چاپ می‌شود (۱۲ برچسب در هر برگ A4).', 'QR labels for the ' + rows.length + ' equipment items in the current list will be printed (12 per A4 sheet).')}</p>`, () => { printLabels(rows, false); }, { saveLabel: L('چاپ', 'Print') });
+    c.querySelectorAll('[data-pp]').forEach(b => b.onclick = () => openPassport(b.dataset.pp));
+    c.querySelectorAll('[data-qr]').forEach(b => b.onclick = () => qrModal(S.equipment.find(x => x.id === b.dataset.qr)));
     document.getElementById('q').oninput = (e) => { UI.search.eq = e.target.value; const p = e.target.selectionStart; vEquip(c); const el = document.getElementById('q'); el.focus(); el.setSelectionRange(p, p); };
     document.getElementById('cat').onchange = (e) => { UI.filters.eqCat = e.target.value; vEquip(c); };
     c.querySelectorAll('[data-e]').forEach(b => b.onclick = () => equipForm(S.equipment.find(e => e.id === b.dataset.e)));
@@ -1037,10 +1078,10 @@ export function startPlant(spec) {
   function equipForm(ex, pre) {
     ex = ex || null; const pf = ex || pre || {};
     modal(ex ? L('ویرایش تجهیز', 'Edit equipment') : L('افزودن تجهیز', 'Add equipment'),
-      fSel('f_cat', L('دسته تجهیز', 'Category'), spec.categories.map(k => ({ v: k.key, l: lab(k) })), ex && ex.category) + fSel('f_stage', L('مرحله در PFD (اختیاری)', 'PFD stage (optional)'), [{ v: '', l: '—' }].concat(SP.STAGE_ORDER.map(k => ({ v: k, l: isFa() ? SP.STAGES[k].fa : SP.STAGES[k].en }))), pf.stage) + fSel('f_pfdel', L('واحد روی PFD (اختیاری — برای رنگ‌شدن سلامت روی PFD)', 'PFD unit (optional — shows health on the PFD)'), [{ v: '', l: '—' }].concat(SP.ELEMENTS.map(e => ({ v: e.id, l: isFa() ? e.fa : e.en }))), pf.pfdEl) + fText('f_name', L('نام تجهیز', 'Equipment name'), pf.name) + fText('f_serial', L('شماره سریال / پلاک', 'Serial / tag number'), ex && ex.serial) + fText('f_loc', L('محل نصب', 'Install location'), ex && ex.location) + dateField('f_inst', L('تاریخ نصب (شمسی)', 'Install date (Jalali)'), ex && ex.installDate) + fArea('f_notes', L('توضیحات', 'Notes'), ex && ex.notes),
+      fSel('f_cat', L('دسته تجهیز', 'Category'), spec.categories.map(k => ({ v: k.key, l: lab(k) })), ex && ex.category) + fSel('f_stage', L('مرحله در PFD (اختیاری)', 'PFD stage (optional)'), [{ v: '', l: '—' }].concat(SP.STAGE_ORDER.map(k => ({ v: k, l: isFa() ? SP.STAGES[k].fa : SP.STAGES[k].en }))), pf.stage) + fSel('f_pfdel', L('واحد روی PFD (اختیاری — برای رنگ‌شدن سلامت روی PFD)', 'PFD unit (optional — shows health on the PFD)'), [{ v: '', l: '—' }].concat(SP.ELEMENTS.map(e => ({ v: e.id, l: isFa() ? e.fa : e.en }))), pf.pfdEl) + fText('f_name', L('نام تجهیز', 'Equipment name'), pf.name) + fSel('f_disc', L('تخصص پیش‌فرض (برای دسته‌بندی کارها)', 'Default discipline (groups the jobs)'), discOpts(L('خودکار از دسته تجهیز', 'Automatic from category')), ex && ex.disc) + fText('f_serial', L('شماره سریال / پلاک', 'Serial / tag number'), ex && ex.serial) + fText('f_loc', L('محل نصب', 'Install location'), ex && ex.location) + dateField('f_inst', L('تاریخ نصب (شمسی)', 'Install date (Jalali)'), ex && ex.installDate) + fArea('f_notes', L('توضیحات', 'Notes'), ex && ex.notes),
       async (m) => {
         const name = gv(m, 'f_name').trim(); if (!name) { toast(L('نام تجهیز را وارد کنید', 'Enter the equipment name')); return false; }
-        const rec = { category: gv(m, 'f_cat'), stage: (SP.elInfo(gv(m, 'f_pfdel')) || { stage: gv(m, 'f_stage') }).stage, pfdEl: gv(m, 'f_pfdel'), name, serial: gv(m, 'f_serial').trim(), location: gv(m, 'f_loc').trim(), installDate: dateVal(m, 'f_inst'), notes: gv(m, 'f_notes').trim() };
+        const rec = { category: gv(m, 'f_cat'), stage: (SP.elInfo(gv(m, 'f_pfdel')) || { stage: gv(m, 'f_stage') }).stage, pfdEl: gv(m, 'f_pfdel'), name, disc: gv(m, 'f_disc'), serial: gv(m, 'f_serial').trim(), location: gv(m, 'f_loc').trim(), installDate: dateVal(m, 'f_inst'), notes: gv(m, 'f_notes').trim() };
         if (ex) await fbUpd('equipment', ex.id, rec); else await fbAdd('equipment', Object.assign({ createdAt: todayISO() }, rec));
         logAct(ex ? L('ویرایش تجهیز', 'Edited equipment') : L('افزودن تجهیز', 'Added equipment'), name); toast(L('ذخیره شد', 'Saved'));
       });
@@ -1053,19 +1094,45 @@ export function startPlant(spec) {
   function pmStat(p) { const base = p.lastDone || p.createdAt || todayISO(); const due = addDays(base, Number(p.freqDays) || 30); const d = diffDays(due, todayISO()); return { k: d < 0 ? 'overdue' : d <= 7 ? 'soon' : 'ok', d, due }; }
   function vPm(c) {
     setTitle(L('بازدید دوره‌ای', 'Periodic inspections'), L('برنامه‌ریزی و پایش بازدیدهای پیشگیرانه', 'Planning and monitoring preventive inspections'));
-    const f = UI.filters.pm || '';
-    const rows = S.pm.map(p => ({ p, s: pmStat(p) })).filter(x => !f || x.s.k === f).sort((a, b) => a.s.d - b.s.d);
+    const f0 = UI.filters.pm || '';
     c.innerHTML = `<div class="toolbar"><button class="btn btn-primary" id="add">＋ ${L('تعریف بازدید', 'Define inspection')}</button>
-      <select id="st"><option value="">${L('همه وضعیت‌ها', 'All statuses')}</option><option value="overdue" ${f === 'overdue' ? 'selected' : ''}>${L('معوق', 'Overdue')}</option><option value="soon" ${f === 'soon' ? 'selected' : ''}>${L('نزدیک موعد', 'Due soon')}</option><option value="ok" ${f === 'ok' ? 'selected' : ''}>${L('به‌روز', 'On time')}</option></select><div style="flex:1"></div><div id="exp">${RK.exportBarHTML()}</div></div>
-      <div class="card" style="padding:0"><div class="table-wrap" style="border:none"><table><thead><tr><th>${L('وضعیت', 'Status')}</th><th>${L('تجهیز', 'Equipment')}</th><th>${L('عنوان بازدید', 'Inspection')}</th><th>${L('تناوب', 'Interval')}</th><th>${L('آخرین انجام', 'Last done')}</th><th>${L('موعد بعدی', 'Next due')}</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(({ p, s }) => `<tr><td><span class="tag ${s.k === 'overdue' ? 'tag-red' : s.k === 'soon' ? 'tag-amber' : 'tag-green'}">${s.k === 'overdue' ? L('معوق', 'Overdue') : s.k === 'soon' ? L('نزدیک موعد', 'Due soon') : L('به‌روز', 'On time')}</span></td><td class="cell-strong">${esc(eqName(p.equipmentId))}</td><td>${esc(p.title)}</td><td>${esc(freqL(p.freqDays))}</td><td class="cell-mono">${p.lastDone ? jStr(p.lastDone) : '—'}</td><td class="cell-mono">${jStr(s.due)}</td>
-        <td><div class="row-actions"><button class="btn btn-sm" data-ok="${p.id}">✓ ${L('انجام شد', 'Done')}</button><span class="icon-sm" data-e="${p.id}">✎</span><span class="icon-sm" data-d="${p.id}">🗑</span></div></td></tr>`).join('') : `<tr><td colspan="7"><div class="empty"><h4>${L('بازدیدی تعریف نشده است', 'No inspections defined')}</h4></div></td></tr>`}</tbody></table></div></div>`;
+      <select id="st"><option value="">${L('همه وضعیت‌ها', 'All statuses')}</option><option value="overdue" ${f0 === 'overdue' ? 'selected' : ''}>${L('معوق', 'Overdue')}</option><option value="soon" ${f0 === 'soon' ? 'selected' : ''}>${L('نزدیک موعد', 'Due soon')}</option><option value="ok" ${f0 === 'ok' ? 'selected' : ''}>${L('به‌روز', 'On time')}</option></select><div style="flex:1"></div><div id="exp">${RK.exportBarHTML()}</div></div>
+      ${advHTML('pm', { eq: true })}<div id="res"></div>`;
     document.getElementById('add').onclick = () => pmForm(null);
-    document.getElementById('st').onchange = (e) => { UI.filters.pm = e.target.value; vPm(c); };
-    c.querySelectorAll('[data-e]').forEach(b => b.onclick = () => pmForm(S.pm.find(x => x.id === b.dataset.e)));
-    c.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { const p = S.pm.find(x => x.id === b.dataset.d); confirmDel(L('این بازدید حذف شود؟', 'Delete this inspection?'), async () => { await fbDel('pm', p.id); logAct(L('حذف بازدید', 'Deleted inspection'), p.title); toast(L('حذف شد', 'Deleted')); }); });
-    c.querySelectorAll('[data-ok]').forEach(b => b.onclick = async () => { const p = S.pm.find(x => x.id === b.dataset.ok); const h = Array.isArray(p.history) ? [...p.history] : []; h.push(todayISO()); await fbUpd('pm', p.id, { lastDone: todayISO(), history: h }); logAct(L('ثبت انجام بازدید', 'Inspection done'), p.title); toast(L('بازدید امروز ثبت شد', 'Inspection recorded for today')); });
-    listExport('exp', () => L('بازدیدهای دوره‌ای', 'Periodic inspections'), () => [L('وضعیت', 'Status'), L('تجهیز', 'Equipment'), L('بازدید', 'Inspection'), L('تناوب', 'Interval'), L('آخرین انجام', 'Last done'), L('موعد بعدی', 'Next due')], () => rows.map(({ p, s }) => [s.k === 'overdue' ? L('معوق', 'Overdue') : s.k === 'soon' ? L('نزدیک موعد', 'Due soon') : L('به‌روز', 'On time'), eqName(p.equipmentId), p.title, freqL(p.freqDays), p.lastDone ? jStr(p.lastDone) : '—', jStr(s.due)]), 'inspections');
+    document.getElementById('st').onchange = (e) => { UI.filters.pm = e.target.value; draw(); };
+    const res = c.querySelector('#res');
+    const stL = (k) => k === 'overdue' ? L('معوق', 'Overdue') : k === 'soon' ? L('نزدیک موعد', 'Due soon') : L('به‌روز', 'On time');
+    function draw() {
+      const sf = UI.filters.pm || '', f = advFilter('pm'), perf = evAll().filter(e => e.kind === 'pm');
+      const rows = S.pm.map(p => ({ p, s: pmStat(p) })).filter(x => (!sf || x.s.k === sf) && pmMatch(x.p, f, perf)).sort((a, b) => a.s.d - b.s.d);
+      const hist = advActive(f) ? SS.filter(perf, f) : [];
+      res.innerHTML = `<div class="card" style="padding:0"><div class="table-wrap" style="border:none"><table><thead><tr><th>${L('وضعیت', 'Status')}</th><th>${L('تجهیز', 'Equipment')}</th><th>${L('تخصص', 'Discipline')}</th><th>${L('عنوان بازدید', 'Inspection')}</th><th>${L('تناوب', 'Interval')}</th><th>${L('آخرین انجام', 'Last done')}</th><th>${L('موعد بعدی', 'Next due')}</th><th></th></tr></thead>
+      <tbody>${rows.length ? rows.map(({ p, s }) => `<tr><td><span class="tag ${s.k === 'overdue' ? 'tag-red' : s.k === 'soon' ? 'tag-amber' : 'tag-green'}">${stL(s.k)}</span></td><td class="cell-strong">${esc(eqName(p.equipmentId))}</td><td>${discTag(SS.discOf(p, eqOf(p.equipmentId)))}</td><td>${esc(p.title)}</td><td>${esc(freqL(p.freqDays))}</td><td class="cell-mono">${p.lastDone ? jStr(p.lastDone) : '—'}</td><td class="cell-mono">${jStr(s.due)}</td>
+        <td><div class="row-actions"><button class="btn btn-sm" data-ok="${p.id}">✓ ${L('انجام شد', 'Done')}</button><span class="icon-sm" data-e="${p.id}">✎</span><span class="icon-sm" data-d="${p.id}">🗑</span></div></td></tr>`).join('') : `<tr><td colspan="8"><div class="empty"><h4>${L('بازدیدی یافت نشد', 'No inspections found')}</h4></div></td></tr>`}</tbody></table></div></div>
+      ${hist.length ? `<div class="grp-head">${L('سابقهٔ انجام بازدیدها (مطابق فیلتر)', 'Inspection history (matching the filter)')} <span>${D(hist.length)}</span></div>${evTable(hist, 500)}` : ''}`;
+      res.querySelectorAll('[data-e]').forEach(b => b.onclick = () => pmForm(S.pm.find(x => x.id === b.dataset.e)));
+      res.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { const p = S.pm.find(x => x.id === b.dataset.d); confirmDel(L('این بازدید حذف شود؟', 'Delete this inspection?'), async () => { await fbDel('pm', p.id); logAct(L('حذف بازدید', 'Deleted inspection'), p.title); toast(L('حذف شد', 'Deleted')); }); });
+      res.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => pmDoneForm(S.pm.find(x => x.id === b.dataset.ok)));
+      RK.bindExport(c.querySelector('#exp'), async () => ({ title: lab(spec.title) + ' — ' + L('بازدیدهای دوره‌ای', 'Periodic inspections'), subtitle: '', meta: [[L('تعداد', 'Count'), D(rows.length)]].concat(advMeta('pm')),
+        sections: [{ title: L('بازدیدهای تعریف‌شده', 'Defined inspections'), table: { head: [L('وضعیت', 'Status'), L('تجهیز', 'Equipment'), L('تخصص', 'Discipline'), L('بازدید', 'Inspection'), L('تناوب', 'Interval'), L('آخرین انجام', 'Last done'), L('موعد بعدی', 'Next due')], rows: rows.map(({ p, s }) => [stL(s.k), eqName(p.equipmentId), discLab(SS.discOf(p, eqOf(p.equipmentId))), p.title, freqL(p.freqDays), p.lastDone ? jStr(p.lastDone) : '—', jStr(s.due)]) } }]
+          .concat(hist.length ? [{ title: L('سابقهٔ انجام بازدیدها', 'Inspection history'), table: { head: EV_HEAD(), rows: hist.map(evRow) } }] : []) }), () => spec.id + '-inspections', toast);
+    }
+    bindAdv(c, 'pm', draw, () => vPm(c)); draw();
+  }
+  /* mark an inspection as done: who did it, when, notes */
+  function pmDoneForm(p) {
+    if (!p) return;
+    let last = ''; try { last = localStorage.getItem('swro-lastby') || ''; } catch (e) { }
+    modal(L('ثبت انجام بازدید — ', 'Record inspection — ') + p.title, `<div style="color:var(--text-muted);font-size:12.5px;margin-bottom:8px">${esc(eqName(p.equipmentId))}</div>${dateField('f_dd', L('تاریخ انجام (شمسی)', 'Date done (Jalali)'), todayISO())}${fText('f_by', L('انجام‌دهنده (چند نفر را با ویرگول جدا کنید)', 'Done by (separate several names with a comma)'), last)}${fArea('f_note', L('توضیحات / نتیجهٔ بازدید', 'Notes / result'), '')}`,
+      async (m) => {
+        const date = dateVal(m, 'f_dd'), by = gv(m, 'f_by').trim(), note = gv(m, 'f_note').trim();
+        const h = Array.isArray(p.history) ? [...p.history] : [], hl = Array.isArray(p.hlog) ? [...p.hlog] : [];
+        if (!h.includes(date)) h.push(date); hl.push({ date, by, note, rec: (window.Role && window.Role.user && window.Role.user()) || '' });
+        const ld = (p.lastDone && p.lastDone > date) ? p.lastDone : date;
+        await fbUpd('pm', p.id, { lastDone: ld, history: h, hlog: hl });
+        try { localStorage.setItem('swro-lastby', by); } catch (e) { }
+        logAct(L('ثبت انجام بازدید', 'Inspection done'), p.title + (by ? ' — ' + by : '')); toast(L('بازدید ثبت شد', 'Inspection recorded'));
+      }, { saveLabel: L('ثبت انجام', 'Record') });
   }
   const freqL = (d) => { const f = FREQS.find(x => x[0] === Number(d)); return f ? L(f[1][0], f[1][1]) : D(d) + ' ' + L('روز', 'days'); };
   function needEq() { if (!S.equipment.length) { toast(L('ابتدا یک تجهیز اضافه کنید', 'Add equipment first')); return true; } return false; }
@@ -1073,10 +1140,10 @@ export function startPlant(spec) {
   function pmForm(ex) {
     if (needEq()) return;
     modal(ex ? L('ویرایش بازدید', 'Edit inspection') : L('تعریف بازدید دوره‌ای', 'Define periodic inspection'),
-      fSel('f_eq', L('تجهیز', 'Equipment'), eqOpts(), ex && ex.equipmentId) + fText('f_title', L('عنوان بازدید', 'Inspection title'), ex && ex.title) + fSel('f_freq', L('دوره تناوب', 'Interval'), FREQS.map(f => ({ v: f[0], l: L(f[1][0], f[1][1]) })), ex ? ex.freqDays : 30) + dateField('f_last', L('آخرین تاریخ انجام (شمسی)', 'Last done (Jalali)'), ex && ex.lastDone) + fArea('f_notes', L('یادداشت', 'Notes'), ex && ex.notes),
+      fSel('f_eq', L('تجهیز', 'Equipment'), eqOpts(), ex && ex.equipmentId) + fText('f_title', L('عنوان بازدید', 'Inspection title'), ex && ex.title) + fSel('f_disc', L('تخصص', 'Discipline'), discOpts(L('از تجهیز', 'From equipment')), ex && ex.disc) + fSel('f_freq', L('دوره تناوب', 'Interval'), FREQS.map(f => ({ v: f[0], l: L(f[1][0], f[1][1]) })), ex ? ex.freqDays : 30) + dateField('f_last', L('آخرین تاریخ انجام (شمسی)', 'Last done (Jalali)'), ex && ex.lastDone) + fArea('f_notes', L('یادداشت', 'Notes'), ex && ex.notes),
       async (m) => {
         const title = gv(m, 'f_title').trim(); if (!title) { toast(L('عنوان بازدید را وارد کنید', 'Enter the inspection title')); return false; }
-        const rec = { equipmentId: gv(m, 'f_eq'), title, freqDays: Number(gv(m, 'f_freq')), lastDone: dateVal(m, 'f_last'), notes: gv(m, 'f_notes').trim() };
+        const rec = { equipmentId: gv(m, 'f_eq'), title, disc: gv(m, 'f_disc'), freqDays: Number(gv(m, 'f_freq')), lastDone: dateVal(m, 'f_last'), notes: gv(m, 'f_notes').trim() };
         if (ex) await fbUpd('pm', ex.id, rec); else await fbAdd('pm', Object.assign({ createdAt: todayISO() }, rec));
         logAct(ex ? L('ویرایش بازدید', 'Edited inspection') : L('تعریف بازدید', 'Defined inspection'), title); toast(L('ذخیره شد', 'Saved'));
       });
@@ -1087,28 +1154,35 @@ export function startPlant(spec) {
      ===================================================================== */
   function vCm(c) {
     setTitle(L('تعمیرات و خرابی‌ها', 'Repairs & failures'), L('ثبت و پیگیری خرابی‌ها و تعمیرات اصلاحی', 'Log and follow up failures and corrective repairs'));
-    const f = UI.filters.cm || '', q = (UI.search.cm || '').toLowerCase();
-    const rows = S.cm.filter(x => (!f || x.status === f) && (!q || ((x.issue || '') + (x.technician || '') + eqName(x.equipmentId)).toLowerCase().includes(q))).sort((a, b) => b.date.localeCompare(a.date));
-    c.innerHTML = `<div class="toolbar"><button class="btn btn-primary" id="add">＋ ${L('ثبت خرابی / تعمیر', 'Log failure / repair')}</button><div class="search">🔍<input id="q" placeholder="${L('جستجو...', 'Search...')}" value="${esc(UI.search.cm || '')}"></div>
-      <select id="st"><option value="">${L('همه', 'All')}</option><option value="open" ${f === 'open' ? 'selected' : ''}>${L('باز', 'Open')}</option><option value="closed" ${f === 'closed' ? 'selected' : ''}>${L('بسته‌شده', 'Closed')}</option></select><div id="exp">${RK.exportBarHTML()}</div></div>
-      <div class="card" style="padding:0"><div class="table-wrap" style="border:none"><table><thead><tr><th>${L('وضعیت', 'Status')}</th><th>${L('تاریخ', 'Date')}</th><th>${L('تجهیز', 'Equipment')}</th><th>${L('شرح خرابی', 'Issue')}</th><th>${L('اقدام انجام‌شده', 'Action taken')}</th><th>${L('تکنسین', 'Technician')}</th><th>${L('قطعات / متریال', 'Parts / materials')}</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(x => `<tr><td><span class="tag ${x.status === 'open' ? 'tag-amber' : 'tag-green'}">${x.status === 'open' ? L('باز', 'Open') : L('بسته‌شده', 'Closed')}</span></td><td class="cell-mono">${jStr(x.date)}</td><td class="cell-strong">${esc(eqName(x.equipmentId))}</td><td>${esc(x.issue)}</td><td>${esc(x.action || '—')}</td><td>${esc(x.technician || '—')}</td><td>${esc(x.materials || '—')}</td>
-        <td><div class="row-actions"><span class="icon-sm" data-e="${x.id}">✎</span><span class="icon-sm" data-d="${x.id}">🗑</span></div></td></tr>`).join('') : `<tr><td colspan="8"><div class="empty"><h4>${L('رکوردی ثبت نشده است', 'No records yet')}</h4></div></td></tr>`}</tbody></table></div></div>`;
+    const f0 = UI.filters.cm || '';
+    c.innerHTML = `<div class="toolbar"><button class="btn btn-primary" id="add">＋ ${L('ثبت خرابی / تعمیر', 'Log failure / repair')}</button>
+      <select id="st"><option value="">${L('همه', 'All')}</option><option value="open" ${f0 === 'open' ? 'selected' : ''}>${L('باز', 'Open')}</option><option value="closed" ${f0 === 'closed' ? 'selected' : ''}>${L('بسته‌شده', 'Closed')}</option></select><div style="flex:1"></div><div id="exp">${RK.exportBarHTML()}</div></div>
+      ${advHTML('cm', { eq: true })}<div id="res"></div>`;
     document.getElementById('add').onclick = () => cmForm(null);
-    document.getElementById('st').onchange = (e) => { UI.filters.cm = e.target.value; vCm(c); };
-    document.getElementById('q').oninput = (e) => { UI.search.cm = e.target.value; const p = e.target.selectionStart; vCm(c); const el = document.getElementById('q'); el.focus(); el.setSelectionRange(p, p); };
-    c.querySelectorAll('[data-e]').forEach(b => b.onclick = () => cmForm(S.cm.find(x => x.id === b.dataset.e)));
-    c.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { const x = S.cm.find(y => y.id === b.dataset.d); confirmDel(L('این رکورد حذف شود؟', 'Delete this record?'), async () => { await fbDel('cm', x.id); logAct(L('حذف تعمیر', 'Deleted repair'), x.issue); toast(L('حذف شد', 'Deleted')); }); });
-    listExport('exp', () => L('تعمیرات و خرابی‌ها', 'Repairs & failures'), () => [L('وضعیت', 'Status'), L('تاریخ', 'Date'), L('تجهیز', 'Equipment'), L('شرح', 'Issue'), L('اقدام', 'Action'), L('تکنسین', 'Technician'), L('متریال', 'Materials')], () => rows.map(x => [x.status === 'open' ? L('باز', 'Open') : L('بسته‌شده', 'Closed'), jStr(x.date), eqName(x.equipmentId), x.issue || '', x.action || '', x.technician || '—', x.materials || '—']), 'repairs');
+    document.getElementById('st').onchange = (e) => { UI.filters.cm = e.target.value; draw(); };
+    const res = c.querySelector('#res');
+    function draw() {
+      const sf = UI.filters.cm || '', f = advFilter('cm');
+      const evs = SS.filter(evAll().filter(e => e.kind === 'cm' && (!sf || e.stRaw === sf)), f);
+      const rows = evs.map(e => ({ e, x: S.cm.find(y => y.id === e.src) })).filter(r => r.x);
+      res.innerHTML = `<div class="card" style="padding:0"><div class="table-wrap" style="border:none"><table><thead><tr><th>${L('وضعیت', 'Status')}</th><th>${L('تاریخ', 'Date')}</th><th>${L('تجهیز', 'Equipment')}</th><th>${L('تخصص', 'Discipline')}</th><th>${L('شرح خرابی', 'Issue')}</th><th>${L('اقدام انجام‌شده', 'Action taken')}</th><th>${L('تکنسین', 'Technician')}</th><th>${L('قطعات / متریال', 'Parts / materials')}</th><th></th></tr></thead>
+      <tbody>${rows.length ? rows.map(({ e, x }) => `<tr><td><span class="tag ${x.status === 'open' ? 'tag-amber' : 'tag-green'}">${x.status === 'open' ? L('باز', 'Open') : L('بسته‌شده', 'Closed')}</span></td><td class="cell-mono">${jStr(x.date)}</td><td class="cell-strong">${esc(e.eqName)}</td><td>${discTag(e.disc)}</td><td>${esc(x.issue)}</td><td>${esc(x.action || '—')}</td><td>${esc(x.technician || '—')}</td><td>${esc(x.materials || '—')}</td>
+        <td><div class="row-actions"><span class="icon-sm" data-e="${x.id}">✎</span><span class="icon-sm" data-d="${x.id}">🗑</span></div></td></tr>`).join('') : `<tr><td colspan="9"><div class="empty"><h4>${L('رکوردی یافت نشد', 'No records found')}</h4></div></td></tr>`}</tbody></table></div></div>`;
+      res.querySelectorAll('[data-e]').forEach(b => b.onclick = () => cmForm(S.cm.find(x => x.id === b.dataset.e)));
+      res.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { const x = S.cm.find(y => y.id === b.dataset.d); confirmDel(L('این رکورد حذف شود؟', 'Delete this record?'), async () => { await fbDel('cm', x.id); logAct(L('حذف تعمیر', 'Deleted repair'), x.issue); toast(L('حذف شد', 'Deleted')); }); });
+      RK.bindExport(c.querySelector('#exp'), async () => ({ title: lab(spec.title) + ' — ' + L('تعمیرات و خرابی‌ها', 'Repairs & failures'), subtitle: '', meta: [[L('تعداد', 'Count'), D(rows.length)]].concat(advMeta('cm')),
+        sections: [{ title: L('تعمیرات و خرابی‌ها', 'Repairs & failures'), table: { head: [L('وضعیت', 'Status'), L('تاریخ', 'Date'), L('تجهیز', 'Equipment'), L('تخصص', 'Discipline'), L('شرح', 'Issue'), L('اقدام', 'Action'), L('تکنسین', 'Technician'), L('متریال', 'Materials')], rows: rows.map(({ e, x }) => [x.status === 'open' ? L('باز', 'Open') : L('بسته‌شده', 'Closed'), jStr(x.date), e.eqName, discLab(e.disc), x.issue || '', x.action || '', x.technician || '—', x.materials || '—']) } }] }), () => spec.id + '-repairs', toast);
+    }
+    bindAdv(c, 'cm', draw, () => vCm(c)); draw();
   }
   function cmForm(ex, pre) {
     if (needEq()) return;
     modal(ex ? L('ویرایش رکورد', 'Edit record') : L('ثبت خرابی / تعمیر', 'Log failure / repair'),
-      fSel('f_eq', L('تجهیز', 'Equipment'), eqOpts(), (ex || pre || {}).equipmentId) + dateField('f_date', L('تاریخ وقوع (شمسی)', 'Date (Jalali)'), ex && ex.date) + fArea('f_issue', L('شرح خرابی / مشکل', 'Issue description'), (ex || pre || {}).issue) + fArea('f_action', L('اقدام انجام‌شده', 'Action taken'), ex && ex.action) + fText('f_tech', L('نام تکنسین', 'Technician'), ex && ex.technician) + fText('f_mat', L('قطعات / متریال مصرفی', 'Parts / materials used'), ex && ex.materials) + fSel('f_status', L('وضعیت', 'Status'), [{ v: 'open', l: L('باز', 'Open') }, { v: 'closed', l: L('بسته‌شده', 'Closed') }], ex ? ex.status : 'open'),
+      fSel('f_eq', L('تجهیز', 'Equipment'), eqOpts(), (ex || pre || {}).equipmentId) + dateField('f_date', L('تاریخ وقوع (شمسی)', 'Date (Jalali)'), ex && ex.date) + fSel('f_disc', L('تخصص', 'Discipline'), discOpts(L('از تجهیز', 'From equipment')), ex && ex.disc) + fArea('f_issue', L('شرح خرابی / مشکل', 'Issue description'), (ex || pre || {}).issue) + fArea('f_action', L('اقدام انجام‌شده', 'Action taken'), ex && ex.action) + fText('f_tech', L('نام تکنسین (چند نفر را با ویرگول جدا کنید)', 'Technician (separate several names with a comma)'), ex && ex.technician) + fText('f_mat', L('قطعات / متریال مصرفی', 'Parts / materials used'), ex && ex.materials) + fSel('f_status', L('وضعیت', 'Status'), [{ v: 'open', l: L('باز', 'Open') }, { v: 'closed', l: L('بسته‌شده', 'Closed') }], ex ? ex.status : 'open'),
       async (m) => {
         const issue = gv(m, 'f_issue').trim(); if (!issue) { toast(L('شرح خرابی را وارد کنید', 'Describe the issue')); return false; }
         const status = gv(m, 'f_status');
-        const rec = { equipmentId: gv(m, 'f_eq'), date: dateVal(m, 'f_date'), issue, action: gv(m, 'f_action').trim(), technician: gv(m, 'f_tech').trim(), materials: gv(m, 'f_mat').trim(), status, closedAt: status === 'closed' ? ((ex && ex.status === 'closed' && ex.closedAt) || todayISO()) : null };
+        const rec = { equipmentId: gv(m, 'f_eq'), date: dateVal(m, 'f_date'), disc: gv(m, 'f_disc'), issue, action: gv(m, 'f_action').trim(), technician: gv(m, 'f_tech').trim(), materials: gv(m, 'f_mat').trim(), status, closedAt: status === 'closed' ? ((ex && ex.status === 'closed' && ex.closedAt) || todayISO()) : null };
         if (ex) await fbUpd('cm', ex.id, rec); else await fbAdd('cm', Object.assign({ createdAt: todayISO() }, rec));
         logAct(ex ? L('ویرایش تعمیر', 'Edited repair') : L('ثبت تعمیر', 'Logged repair'), eqName(rec.equipmentId) + ' — ' + issue); toast(L('ذخیره شد', 'Saved'));
       });
@@ -1126,39 +1200,235 @@ export function startPlant(spec) {
   const nextWoNo = () => { const y = isoToJ(todayISO()).year; const n = S.wo.map(w => parseInt(String(w.no || '').split('-').pop(), 10)).filter(x => !isNaN(x)); return `WO-${y}-${String((n.length ? Math.max(...n) : 0) + 1).padStart(3, '0')}`; };
   function vWo(c) {
     setTitle(L('دستورکار', 'Work orders'), L('صدور، پیگیری و تکمیل دستورکارهای نگهداری و تعمیرات', 'Issue, track and complete maintenance work orders'));
-    const f = UI.filters.wo || '', q = (UI.search.wo || '').toLowerCase();
-    const rows = S.wo.filter(w => (!f || w.status === f) && (!q || ((w.description || '') + (w.assignee || '') + (w.no || '') + eqName(w.equipmentId)).toLowerCase().includes(q))).sort((a, b) => (b.date || '').localeCompare(a.date || '') || String(b.no).localeCompare(String(a.no)));
-    const cnt = (k) => S.wo.filter(w => w.status === k).length;
+    const f0 = UI.filters.wo || '', cnt = (k) => S.wo.filter(w => w.status === k).length;
     c.innerHTML = `<div class="grid kpi-row">${WO_STAT.map(([k, l]) => `<div class="card kpi" style="--k:${k === 'done' ? 'var(--green)' : k === 'progress' ? 'var(--amber)' : k === 'new' ? 'var(--accent-2)' : 'var(--text-dim)'};margin:0;"><div class="kpi-label">${L(l[0], l[1])}</div><div class="kpi-value">${D(cnt(k))}</div></div>`).join('')}</div>
-      <div class="toolbar"><button class="btn btn-primary" id="add">＋ ${L('صدور دستورکار', 'New work order')}</button><div class="search">🔍<input id="q" placeholder="${L('جستجو...', 'Search...')}" value="${esc(UI.search.wo || '')}"></div>
-      <select id="st"><option value="">${L('همه وضعیت‌ها', 'All statuses')}</option>${WO_STAT.map(([k, l]) => `<option value="${k}" ${f === k ? 'selected' : ''}>${L(l[0], l[1])}</option>`).join('')}</select><div id="exp">${RK.exportBarHTML()}</div></div>
-      <div class="card" style="padding:0"><div class="table-wrap" style="border:none"><table><thead><tr><th>${L('شماره', 'No.')}</th><th>${L('وضعیت', 'Status')}</th><th>${L('اولویت', 'Priority')}</th><th>${L('تاریخ صدور', 'Issued')}</th><th>${L('تجهیز', 'Equipment')}</th><th>${L('نوع', 'Type')}</th><th>${L('شرح کار', 'Description')}</th><th>${L('مسئول انجام', 'Assignee')}</th><th>${L('مهلت', 'Due')}</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(w => { const st = WO_STAT.find(x => x[0] === w.status) || WO_STAT[0], pr = WO_PRIO.find(x => x[0] === w.priority) || WO_PRIO[1]; const late = w.dueDate && w.status !== 'done' && w.status !== 'cancelled' && w.dueDate < todayISO(); return `<tr><td class="cell-strong cell-mono">${esc(w.no || '—')}</td><td><span class="tag ${st[2]}">${L(st[1][0], st[1][1])}</span></td><td><span class="tag ${pr[2]}">${L(pr[1][0], pr[1][1])}</span></td><td class="cell-mono">${jStr(w.date)}</td><td class="cell-strong">${esc(eqName(w.equipmentId))}</td><td>${esc(woTypeL(w.type))}</td><td>${esc(w.description || '')}</td><td>${esc(w.assignee || '—')}</td><td class="cell-mono" style="${late ? 'color:var(--red);font-weight:700' : ''}">${w.dueDate ? jStr(w.dueDate) : '—'}</td>
-        <td><div class="row-actions">${w.status === 'new' ? `<button class="btn btn-sm" data-go="${w.id}">▶ ${L('شروع', 'Start')}</button>` : ''}${w.status === 'progress' ? `<button class="btn btn-sm" data-fin="${w.id}">✓ ${L('تکمیل', 'Complete')}</button>` : ''}<span class="icon-sm" data-e="${w.id}">✎</span><span class="icon-sm" data-d="${w.id}">🗑</span></div></td></tr>`; }).join('') : `<tr><td colspan="10"><div class="empty"><h4>${L('دستورکاری ثبت نشده است', 'No work orders yet')}</h4></div></td></tr>`}</tbody></table></div></div>`;
+      <div class="toolbar"><button class="btn btn-primary" id="add">＋ ${L('صدور دستورکار', 'New work order')}</button>
+      <select id="st"><option value="">${L('همه وضعیت‌ها', 'All statuses')}</option>${WO_STAT.map(([k, l]) => `<option value="${k}" ${f0 === k ? 'selected' : ''}>${L(l[0], l[1])}</option>`).join('')}</select><div style="flex:1"></div><div id="exp">${RK.exportBarHTML()}</div></div>
+      ${advHTML('wo', { eq: true })}<div id="res"></div>`;
     document.getElementById('add').onclick = () => woForm(null);
-    document.getElementById('st').onchange = (e) => { UI.filters.wo = e.target.value; vWo(c); };
-    document.getElementById('q').oninput = (e) => { UI.search.wo = e.target.value; const p = e.target.selectionStart; vWo(c); const el = document.getElementById('q'); el.focus(); el.setSelectionRange(p, p); };
-    c.querySelectorAll('[data-e]').forEach(b => b.onclick = () => woForm(S.wo.find(x => x.id === b.dataset.e)));
-    c.querySelectorAll('[data-go]').forEach(b => b.onclick = async () => { const w = S.wo.find(x => x.id === b.dataset.go); await fbUpd('wo', w.id, { status: 'progress', startedAt: todayISO() }); logAct(L('شروع دستورکار', 'Work order started'), w.no); toast(L('دستورکار در حال انجام است', 'Work order in progress')); });
-    c.querySelectorAll('[data-fin]').forEach(b => b.onclick = () => { const w = S.wo.find(x => x.id === b.dataset.fin); modal(L('تکمیل دستورکار ', 'Complete work order ') + w.no, fNum('f_hrs', L('ساعت کار انجام‌شده', 'Hours spent'), w.hours) + fArea('f_note', L('گزارش انجام کار', 'Completion notes'), w.completionNote), async (m) => { await fbUpd('wo', w.id, { status: 'done', completedAt: todayISO(), hours: gv(m, 'f_hrs') === '' ? null : Number(toEn(gv(m, 'f_hrs'))), completionNote: gv(m, 'f_note').trim() }); logAct(L('تکمیل دستورکار', 'Work order completed'), w.no); toast(L('دستورکار تکمیل شد', 'Work order completed')); }, { saveLabel: L('ثبت تکمیل', 'Mark complete') }); });
-    c.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { const w = S.wo.find(x => x.id === b.dataset.d); confirmDel(L('دستورکار ', 'Delete work order ') + w.no + L(' حذف شود؟', '?'), async () => { await fbDel('wo', w.id); logAct(L('حذف دستورکار', 'Deleted work order'), w.no); toast(L('حذف شد', 'Deleted')); }); });
-    listExport('exp', () => L('دستورکارها', 'Work orders'), () => [L('شماره', 'No.'), L('وضعیت', 'Status'), L('اولویت', 'Priority'), L('تاریخ', 'Date'), L('تجهیز', 'Equipment'), L('نوع', 'Type'), L('شرح', 'Description'), L('مسئول', 'Assignee'), L('مهلت', 'Due'), L('ساعت کار', 'Hours')], () => rows.map(w => [w.no || '—', woStatL(w.status), woPrioL(w.priority), jStr(w.date), eqName(w.equipmentId), woTypeL(w.type), w.description || '', w.assignee || '—', w.dueDate ? jStr(w.dueDate) : '—', w.hours == null ? '—' : num(w.hours, 1)]), 'work-orders');
+    document.getElementById('st').onchange = (e) => { UI.filters.wo = e.target.value; draw(); };
+    const res = c.querySelector('#res');
+    function draw() {
+      const sf = UI.filters.wo || '', f = advFilter('wo');
+      const evs = SS.filter(evAll().filter(e => e.kind === 'wo' && (!sf || e.stRaw === sf)), f);
+      const rows = evs.map(e => ({ e, w: S.wo.find(y => y.id === e.src) })).filter(r => r.w).sort((a, b) => (b.w.date || '').localeCompare(a.w.date || '') || String(b.w.no).localeCompare(String(a.w.no)));
+      res.innerHTML = `<div class="card" style="padding:0"><div class="table-wrap" style="border:none"><table><thead><tr><th>${L('شماره', 'No.')}</th><th>${L('وضعیت', 'Status')}</th><th>${L('اولویت', 'Priority')}</th><th>${L('تاریخ صدور', 'Issued')}</th><th>${L('تجهیز', 'Equipment')}</th><th>${L('تخصص', 'Discipline')}</th><th>${L('نوع', 'Type')}</th><th>${L('شرح کار', 'Description')}</th><th>${L('مسئول / انجام‌دهنده', 'Assignee / done by')}</th><th>${L('مهلت', 'Due')}</th><th></th></tr></thead>
+      <tbody>${rows.length ? rows.map(({ e, w }) => { const st = WO_STAT.find(x => x[0] === w.status) || WO_STAT[0], pr = WO_PRIO.find(x => x[0] === w.priority) || WO_PRIO[1]; const late = w.dueDate && w.status !== 'done' && w.status !== 'cancelled' && w.dueDate < todayISO(); return `<tr><td class="cell-strong cell-mono">${esc(w.no || '—')}</td><td><span class="tag ${st[2]}">${L(st[1][0], st[1][1])}</span></td><td><span class="tag ${pr[2]}">${L(pr[1][0], pr[1][1])}</span></td><td class="cell-mono">${jStr(w.date)}</td><td class="cell-strong">${esc(e.eqName)}</td><td>${discTag(e.disc)}</td><td>${esc(woTypeL(w.type))}</td><td>${esc(w.description || '')}</td><td>${esc(e.by.join('، ') || '—')}</td><td class="cell-mono" style="${late ? 'color:var(--red);font-weight:700' : ''}">${w.dueDate ? jStr(w.dueDate) : '—'}</td>
+        <td><div class="row-actions">${w.status === 'new' ? `<button class="btn btn-sm" data-go="${w.id}">▶ ${L('شروع', 'Start')}</button>` : ''}${w.status === 'progress' ? `<button class="btn btn-sm" data-fin="${w.id}">✓ ${L('تکمیل', 'Complete')}</button>` : ''}<span class="icon-sm" data-e="${w.id}">✎</span><span class="icon-sm" data-d="${w.id}">🗑</span></div></td></tr>`; }).join('') : `<tr><td colspan="11"><div class="empty"><h4>${L('دستورکاری یافت نشد', 'No work orders found')}</h4></div></td></tr>`}</tbody></table></div></div>`;
+      res.querySelectorAll('[data-e]').forEach(b => b.onclick = () => woForm(S.wo.find(x => x.id === b.dataset.e)));
+      res.querySelectorAll('[data-go]').forEach(b => b.onclick = async () => { const w = S.wo.find(x => x.id === b.dataset.go); await fbUpd('wo', w.id, { status: 'progress', startedAt: todayISO() }); logAct(L('شروع دستورکار', 'Work order started'), w.no); toast(L('دستورکار در حال انجام است', 'Work order in progress')); });
+      res.querySelectorAll('[data-fin]').forEach(b => b.onclick = () => { const w = S.wo.find(x => x.id === b.dataset.fin); modal(L('تکمیل دستورکار ', 'Complete work order ') + w.no, fText('f_by', L('انجام‌دهنده (چند نفر را با ویرگول جدا کنید)', 'Done by (separate several names with a comma)'), w.doneBy || w.assignee) + fNum('f_hrs', L('ساعت کار انجام‌شده', 'Hours spent'), w.hours) + fArea('f_note', L('گزارش انجام کار', 'Completion notes'), w.completionNote), async (m) => { await fbUpd('wo', w.id, { status: 'done', completedAt: todayISO(), doneBy: gv(m, 'f_by').trim(), hours: gv(m, 'f_hrs') === '' ? null : Number(toEn(gv(m, 'f_hrs'))), completionNote: gv(m, 'f_note').trim() }); logAct(L('تکمیل دستورکار', 'Work order completed'), w.no); toast(L('دستورکار تکمیل شد', 'Work order completed')); }, { saveLabel: L('ثبت تکمیل', 'Mark complete') }); });
+      res.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { const w = S.wo.find(x => x.id === b.dataset.d); confirmDel(L('دستورکار ', 'Delete work order ') + w.no + L(' حذف شود؟', '?'), async () => { await fbDel('wo', w.id); logAct(L('حذف دستورکار', 'Deleted work order'), w.no); toast(L('حذف شد', 'Deleted')); }); });
+      RK.bindExport(c.querySelector('#exp'), async () => ({ title: lab(spec.title) + ' — ' + L('دستورکارها', 'Work orders'), subtitle: '', meta: [[L('تعداد', 'Count'), D(rows.length)]].concat(advMeta('wo')),
+        sections: [{ title: L('دستورکارها', 'Work orders'), table: { head: [L('شماره', 'No.'), L('وضعیت', 'Status'), L('اولویت', 'Priority'), L('تاریخ', 'Date'), L('تجهیز', 'Equipment'), L('تخصص', 'Discipline'), L('نوع', 'Type'), L('شرح', 'Description'), L('مسئول / انجام‌دهنده', 'Assignee / done by'), L('مهلت', 'Due'), L('ساعت کار', 'Hours')], rows: rows.map(({ e, w }) => [w.no || '—', woStatL(w.status), woPrioL(w.priority), jStr(w.date), e.eqName, discLab(e.disc), woTypeL(w.type), w.description || '', e.by.join('، ') || '—', w.dueDate ? jStr(w.dueDate) : '—', w.hours == null ? '—' : num(w.hours, 1)]) } }] }), () => spec.id + '-work-orders', toast);
+    }
+    bindAdv(c, 'wo', draw, () => vWo(c)); draw();
   }
   function woForm(ex, pre) {
     modal(ex ? L('ویرایش دستورکار ', 'Edit work order ') + (ex.no || '') : L('صدور دستورکار جدید', 'New work order'),
       fText('f_no', L('شماره دستورکار', 'Work order no.'), ex ? ex.no : nextWoNo()) + dateField('f_date', L('تاریخ صدور (شمسی)', 'Issue date (Jalali)'), ex && ex.date) +
       fSel('f_eq', L('تجهیز (اختیاری)', 'Equipment (optional)'), [{ v: '', l: '—' }].concat(eqOpts()), (ex || pre || {}).equipmentId) +
       `<div class="field-row">${fSel('f_type', L('نوع کار', 'Work type'), WO_TYPES.map(t => ({ v: t[0], l: L(t[1][0], t[1][1]) })), ex ? ex.type : ((pre && pre.type) || 'preventive'))}${fSel('f_prio', L('اولویت', 'Priority'), WO_PRIO.map(t => ({ v: t[0], l: L(t[1][0], t[1][1]) })), ex ? ex.priority : 'normal')}</div>` +
-      fArea('f_desc', L('شرح کار', 'Work description'), (ex || pre || {}).description) + fText('f_asg', L('مسئول انجام', 'Assignee'), ex && ex.assignee) + dateField('f_due', L('مهلت انجام (شمسی)', 'Due date (Jalali)'), ex && ex.dueDate ? ex.dueDate : addDays(todayISO(), 7), true) +
+      fSel('f_disc', L('تخصص', 'Discipline'), discOpts(L('از تجهیز', 'From equipment')), ex && ex.disc) + fArea('f_desc', L('شرح کار', 'Work description'), (ex || pre || {}).description) + fText('f_asg', L('مسئول انجام (چند نفر را با ویرگول جدا کنید)', 'Assignee (separate several names with a comma)'), ex && ex.assignee) + dateField('f_due', L('مهلت انجام (شمسی)', 'Due date (Jalali)'), ex && ex.dueDate ? ex.dueDate : addDays(todayISO(), 7), true) +
       fSel('f_status', L('وضعیت', 'Status'), WO_STAT.map(t => ({ v: t[0], l: L(t[1][0], t[1][1]) })), ex ? ex.status : 'new'),
       async (m) => {
         const desc = gv(m, 'f_desc').trim(); if (!desc) { toast(L('شرح کار را وارد کنید', 'Describe the work')); return false; }
         const status = gv(m, 'f_status');
-        const rec = { no: gv(m, 'f_no').trim() || nextWoNo(), date: dateVal(m, 'f_date'), equipmentId: gv(m, 'f_eq'), type: gv(m, 'f_type'), priority: gv(m, 'f_prio'), description: desc, assignee: gv(m, 'f_asg').trim(), dueDate: dateVal(m, 'f_due'), status };
+        const rec = { no: gv(m, 'f_no').trim() || nextWoNo(), date: dateVal(m, 'f_date'), equipmentId: gv(m, 'f_eq'), disc: gv(m, 'f_disc'), type: gv(m, 'f_type'), priority: gv(m, 'f_prio'), description: desc, assignee: gv(m, 'f_asg').trim(), dueDate: dateVal(m, 'f_due'), status };
         if (status === 'done' && !(ex && ex.completedAt)) rec.completedAt = todayISO();
         if (ex) await fbUpd('wo', ex.id, rec); else await fbAdd('wo', Object.assign({ createdAt: todayISO() }, rec));
         logAct(ex ? L('ویرایش دستورکار', 'Edited work order') : L('صدور دستورکار', 'Issued work order'), rec.no + ' — ' + desc); toast(L('ذخیره شد', 'Saved'));
       });
+  }
+
+  /* =====================================================================
+     PROFESSIONAL SEARCH — shared by inspections / repairs / work orders
+     and the search centre (disciplines, person work record, export)
+     ===================================================================== */
+  const SS = window.SWRO_SEARCH;
+  const discLab = (k) => lab(SS.discInfo(k));
+  const discTag = (k) => { const d = SS.discInfo(k); return `<span class="tag" style="background:${d.c}22;color:${d.c}">${esc(lab(d))}</span>`; };
+  const discOpts = (first) => [{ v: '', l: first }].concat(SS.DISC.map(d => ({ v: d.k, l: lab(d) })));
+  const eqOf = (id) => S.equipment.find(e => e.id === id);
+  const evAll = () => SS.events(S);
+  const kindLab = (k) => lab(SS.KINDS.find(x => x.k === k) || { fa: k, en: k });
+  const evStatL = (e) => e.kind === 'pm' ? L('انجام‌شده', 'Done') : e.kind === 'cm' ? (e.stRaw === 'closed' ? L('بسته‌شده', 'Closed') : L('باز', 'Open')) : woStatL(e.stRaw);
+  const parseJ = (str) => { const t = toEn(String(str || '')).trim().replace(/[-.]/g, '/'); const m = t.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/); if (!m) return ''; const y = +m[1], mo = +m[2], d = +m[3]; if (mo < 1 || mo > 12 || d < 1 || d > daysInJ(y, mo)) return ''; return jToISO(y, mo, d); };
+  const jTxt = (iso) => { const p = isoToJ(iso); return `${p.year}/${String(p.month).padStart(2, '0')}/${String(p.day).padStart(2, '0')}`; };
+  const advState = (key) => { UI.adv = UI.adv || {}; return UI.adv[key] || (UI.adv[key] = { q: '', discs: [], kinds: [], person: '', fromTxt: '', toTxt: '', st: '', eqId: '', grp: '' }); };
+  const advFilter = (key) => { const a = advState(key); return { q: a.q, discs: a.discs, kinds: a.kinds, person: a.person, from: parseJ(a.fromTxt), to: parseJ(a.toTxt), st: a.st, eqId: a.eqId }; };
+  const advActive = (f) => !!(f.q || f.discs.length || (f.kinds && f.kinds.length) || f.person || f.from || f.to || f.st || f.eqId);
+  /* human-readable description of the active filters → report meta */
+  function advMeta(key) {
+    const a = advState(key), f = advFilter(key), m = [];
+    if (f.q) m.push([L('عبارت جستجو', 'Search'), f.q]);
+    if (f.person) m.push([L('فرد', 'Person'), f.person]);
+    if (f.discs.length) m.push([L('تخصص', 'Discipline'), f.discs.map(discLab).join('، ')]);
+    if (f.kinds && f.kinds.length) m.push([L('نوع', 'Type'), f.kinds.map(kindLab).join('، ')]);
+    if (f.eqId) m.push([L('تجهیز', 'Equipment'), eqName(f.eqId)]);
+    if (f.st) m.push([L('وضعیت', 'Status'), lab(SS.STAT.find(x => x.k === f.st))]);
+    if (f.from || f.to) m.push([L('بازه', 'Period'), (f.from ? jStr(f.from) : '…') + ' → ' + (f.to ? jStr(f.to) : '…')]);
+    return m;
+  }
+  function advHTML(key, o) {
+    o = o || {}; const a = advState(key), ppl = SS.people(evAll());
+    const rng = [[7, L('۷ روز', '7 d')], [30, L('۳۰ روز', '30 d')], [90, L('۹۰ روز', '90 d')], ['y', L('امسال', 'This year')], [0, L('همه', 'All')]];
+    return `<div class="card adv" id="adv_${key}">
+      <div class="adv-row"><div class="search">🔍<input id="a_q" autocomplete="off" placeholder="${L('جستجوی چندکلمه‌ای: تجهیز، شرح، اقدام، قطعه، نام فرد، شماره دستورکار…', 'Multi-word search: equipment, issue, action, part, person, WO no…')}" value="${esc(a.q)}"></div>
+        <div class="search" style="max-width:270px;flex:none">👤<input id="a_person" list="a_ppl" autocomplete="off" placeholder="${L('نام فرد (کارنامه)', 'Person (work record)')}" value="${esc(a.person)}"><datalist id="a_ppl">${ppl.map(p => `<option value="${esc(p.name)}">${D(p.n)} ${L('کار', 'jobs')}</option>`).join('')}</datalist></div></div>
+      ${o.people ? `<div class="adv-row"><span class="adv-lab">${L('افراد', 'People')}</span>${ppl.slice(0, 10).map(p => `<button type="button" class="chip ${SS.norm(a.person) === p.key ? 'on' : ''}" data-ppl="${esc(p.name)}">${esc(p.name)} · ${D(p.n)}</button>`).join('') || `<span class="adv-hint">${L('هنوز نام فردی ثبت نشده است', 'No names recorded yet')}</span>`}</div>` : ''}
+      ${o.kinds ? `<div class="adv-row"><span class="adv-lab">${L('نوع', 'Type')}</span>${SS.KINDS.map(k => `<button type="button" class="chip ${a.kinds.includes(k.k) ? 'on' : ''}" data-kind="${k.k}">${esc(lab(k))}</button>`).join('')}</div>` : ''}
+      <div class="adv-row"><span class="adv-lab">${L('تخصص', 'Discipline')}</span>${SS.DISC.map(d => `<button type="button" class="chip ${a.discs.includes(d.k) ? 'on' : ''}" data-disc="${d.k}" style="--cc:${d.c}">${esc(lab(d))}</button>`).join('')}</div>
+      <div class="adv-row"><span class="adv-lab">${L('بازه', 'Period')}</span>
+        <input class="mini" id="a_from" inputmode="numeric" autocomplete="off" placeholder="${L('از ۱۴۰۵/۰۱/۰۱', 'From 1405/01/01')}" value="${esc(a.fromTxt)}"><input class="mini" id="a_to" inputmode="numeric" autocomplete="off" placeholder="${L('تا ۱۴۰۵/۱۲/۲۹', 'To 1405/12/29')}" value="${esc(a.toTxt)}">
+        ${rng.map(r => `<button type="button" class="chip sm" data-rng="${r[0]}">${r[1]}</button>`).join('')}</div>
+      <div class="adv-row">${o.status ? `<select id="a_st"><option value="">${L('همه وضعیت‌ها', 'All statuses')}</option>${SS.STAT.map(s => `<option value="${s.k}" ${a.st === s.k ? 'selected' : ''}>${esc(lab(s))}</option>`).join('')}</select>` : ''}
+        ${o.eq ? `<select id="a_eq"><option value="">${L('همه تجهیزات', 'All equipment')}</option>${S.equipment.slice().sort((x, y) => x.name.localeCompare(y.name, 'fa')).map(e => `<option value="${e.id}" ${a.eqId === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select>` : ''}
+        ${o.group ? `<select id="a_grp"><option value="">${L('بدون گروه‌بندی', 'No grouping')}</option>${[['disc', L('گروه‌بندی بر اساس تخصص', 'Group by discipline')], ['person', L('گروه‌بندی بر اساس فرد', 'Group by person')], ['eq', L('گروه‌بندی بر اساس تجهیز', 'Group by equipment')], ['kind', L('گروه‌بندی بر اساس نوع', 'Group by type')], ['month', L('گروه‌بندی بر اساس ماه', 'Group by month')]].map(g => `<option value="${g[0]}" ${a.grp === g[0] ? 'selected' : ''}>${g[1]}</option>`).join('')}</select>` : ''}
+        <button type="button" class="btn btn-sm" id="a_clear">✕ ${L('پاک‌کردن فیلترها', 'Clear filters')}</button></div></div>`;
+  }
+  function bindAdv(c, key, onChange, rerender) {
+    const a = advState(key), p = document.getElementById('adv_' + key); if (!p) return;
+    const q = (id) => p.querySelector('#' + id);
+    q('a_q').oninput = (e) => { a.q = e.target.value; onChange(); };
+    const per = q('a_person'); per.oninput = per.onchange = (e) => { a.person = e.target.value; p.querySelectorAll('[data-ppl]').forEach(b => b.classList.toggle('on', SS.norm(a.person) === SS.norm(b.dataset.ppl))); onChange(); };
+    p.querySelectorAll('[data-ppl]').forEach(b => b.onclick = () => { a.person = SS.norm(a.person) === SS.norm(b.dataset.ppl) ? '' : b.dataset.ppl; per.value = a.person; p.querySelectorAll('[data-ppl]').forEach(x => x.classList.toggle('on', SS.norm(a.person) === SS.norm(x.dataset.ppl))); onChange(); });
+    const tog = (arr, v) => { const i = arr.indexOf(v); if (i >= 0) arr.splice(i, 1); else arr.push(v); };
+    p.querySelectorAll('[data-disc]').forEach(b => b.onclick = () => { tog(a.discs, b.dataset.disc); b.classList.toggle('on', a.discs.includes(b.dataset.disc)); onChange(); });
+    p.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => { tog(a.kinds, b.dataset.kind); b.classList.toggle('on', a.kinds.includes(b.dataset.kind)); onChange(); });
+    q('a_from').oninput = (e) => { a.fromTxt = e.target.value; onChange(); }; q('a_to').oninput = (e) => { a.toTxt = e.target.value; onChange(); };
+    p.querySelectorAll('[data-rng]').forEach(b => b.onclick = () => {
+      const v = b.dataset.rng, t = todayISO();
+      if (v === '0') { a.fromTxt = ''; a.toTxt = ''; } else if (v === 'y') { a.fromTxt = jTxt(jToISO(curJY(), 1, 1)); a.toTxt = jTxt(t); } else { a.fromTxt = jTxt(addDays(t, -Number(v))); a.toTxt = jTxt(t); }
+      q('a_from').value = a.fromTxt; q('a_to').value = a.toTxt; onChange();
+    });
+    ['a_st:st', 'a_eq:eqId', 'a_grp:grp'].forEach(x => { const [id, k] = x.split(':'), el = q(id); if (el) el.onchange = (e) => { a[k] = e.target.value; onChange(); }; });
+    q('a_clear').onclick = () => { UI.adv[key] = null; rerender(); };
+  }
+  const pmDefEv = (p) => { const eq = eqOf(p.equipmentId); return { id: 'def:' + p.id, kind: 'pm', date: p.lastDone || p.createdAt || '', eqId: p.equipmentId, eqName: eq ? eq.name : '—', eqSerial: eq ? eq.serial || '' : '', eqLoc: eq ? eq.location || '' : '', title: p.title || '', detail: p.notes || '', action: '', by: [], disc: SS.discOf(p, eq), st: 'done', materials: '', no: '', type: '' }; };
+  function pmMatch(p, f, perf) {
+    const mine = perf.filter(e => e.src === p.id);
+    if (!SS.filter([pmDefEv(p)].concat(mine), { q: f.q, discs: f.discs, eqId: f.eqId }).length) return false;
+    if (f.person || f.from || f.to) return SS.filter(mine, { person: f.person, from: f.from, to: f.to }).length > 0;
+    return true;
+  }
+  const evRow = (e) => [jStr(e.date), kindLab(e.kind), discLab(e.disc), e.eqName, e.no ? e.no + ' — ' + (e.title || '') : (e.title || ''), e.action || '', e.by.join('، ') || '—', evStatL(e)];
+  const EV_HEAD = () => [L('تاریخ', 'Date'), L('نوع', 'Type'), L('تخصص', 'Discipline'), L('تجهیز', 'Equipment'), L('شرح', 'Description'), L('اقدام / یادداشت', 'Action / note'), L('انجام‌دهنده', 'Done by'), L('وضعیت', 'Status')];
+  const evTable = (list, cap) => { const shown = cap ? list.slice(0, cap) : list; return `<div class="card" style="padding:0"><div class="table-wrap" style="border:none"><table><thead><tr>${EV_HEAD().map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${shown.length ? shown.map(e => `<tr><td class="cell-mono">${jStr(e.date)}</td><td><span class="tag ${e.kind === 'cm' ? 'tag-amber' : e.kind === 'wo' ? 'tag-blue' : 'tag-green'}">${esc(kindLab(e.kind))}</span></td><td>${discTag(e.disc)}</td><td class="cell-strong">${esc(e.eqName)}</td><td>${e.no ? `<span class="cell-mono">${esc(e.no)}</span> ` : ''}${esc(e.title || '')}</td><td>${esc(e.action || '—')}</td><td>${esc(e.by.join('، ') || '—')}</td><td><span class="tag ${e.st === 'open' ? 'tag-amber' : e.st === 'cancelled' ? 'tag-muted' : 'tag-green'}">${esc(evStatL(e))}</span></td></tr>`).join('') : `<tr><td colspan="8"><div class="empty"><h4>${L('نتیجه‌ای یافت نشد', 'No results')}</h4><p>${L('فیلترها را تغییر دهید یا پاک کنید.', 'Change or clear the filters.')}</p></div></td></tr>`}</tbody></table></div></div>${cap && list.length > cap ? `<p class="adv-hint" style="margin:8px 4px">${L('فقط ' + D(cap) + ' ردیف نخست نمایش داده شد؛ خروجی PDF/Excel شامل همهٔ ' + D(list.length) + ' ردیف است.', 'Only the first ' + cap + ' rows are shown; the PDF/Excel export contains all ' + list.length + ' rows.')}</p>` : ''}`; };
+
+  /* ---------- search centre: everything in one place ---------- */
+  const monthKey = (iso) => { const p = isoToJ(iso || todayISO()); return `${p.year}/${String(p.month).padStart(2, '0')} — ${mName(p.month)}`; };
+  function groupEvents(list, g) {
+    if (!g) return [{ key: '', items: list }];
+    const fn = { disc: (e) => discLab(e.disc), person: (e) => e.by.length ? e.by : [L('— بدون نام —', '— unnamed —')], eq: (e) => e.eqName, kind: (e) => kindLab(e.kind), month: (e) => monthKey(e.date) }[g];
+    const r = SS.groupBy(list, fn); if (g === 'month') r.sort((a, b) => b.key.localeCompare(a.key)); else r.sort((a, b) => b.items.length - a.items.length); return r;
+  }
+  function buildSearchReport(key, list) {
+    const f = advFilter(key), a = advState(key), sm = SS.summary(list), fa = isFa();
+    const byDisc = SS.groupBy(list, (e) => e.disc).map(g => [discLab(g.key), D(g.items.filter(e => e.kind === 'pm').length), D(g.items.filter(e => e.kind === 'cm').length), D(g.items.filter(e => e.kind === 'wo').length), D(g.items.length)]);
+    const byPer = SS.groupBy(list, (e) => e.by.length ? e.by : [L('— بدون نام —', '— unnamed —')]).sort((x, y) => y.items.length - x.items.length).map(g => [g.key, D(g.items.filter(e => e.kind === 'pm').length), D(g.items.filter(e => e.kind === 'cm').length), D(g.items.filter(e => e.kind === 'wo').length), D(g.items.length), num(g.items.reduce((s, e) => s + (e.hours || 0), 0), 1)]);
+    const sections = [{ title: L('خلاصه', 'Summary'), kpis: [{ label: L('کل موارد', 'Total'), value: D(sm.total), unit: '' }, { label: L('بازدید', 'Inspections'), value: D(sm.pm), unit: '' }, { label: L('تعمیر', 'Repairs'), value: D(sm.cm), unit: '' }, { label: L('دستورکار', 'Work orders'), value: D(sm.wo), unit: '' }, { label: L('نفرات', 'People'), value: D(sm.persons), unit: '' }, { label: L('ساعت کار ثبت‌شده', 'Hours logged'), value: num(sm.hours, 1), unit: L('ساعت', 'h') }] }];
+    if (byDisc.length) sections.push({ title: L('تفکیک بر اساس تخصص', 'By discipline'), table: { head: [L('تخصص', 'Discipline'), L('بازدید', 'Inspections'), L('تعمیر', 'Repairs'), L('دستورکار', 'Work orders'), L('جمع', 'Total')], rows: byDisc } });
+    if (byPer.length) sections.push({ title: L('تفکیک بر اساس فرد', 'By person'), table: { head: [L('نام', 'Name'), L('بازدید', 'Inspections'), L('تعمیر', 'Repairs'), L('دستورکار', 'Work orders'), L('جمع', 'Total'), L('ساعت', 'Hours')], rows: byPer } });
+    groupEvents(list, a.grp).forEach(g => sections.push({ title: g.key ? (L('جزئیات — ', 'Details — ') + g.key + ' (' + D(g.items.length) + ')') : L('جزئیات کارها', 'Work details'), table: { head: EV_HEAD(), rows: g.items.map(evRow) } }));
+    return { title: lab(spec.title) + ' — ' + (f.person ? L('کارنامهٔ ', 'Work record — ') + f.person : L('گزارش جستجوی نگهداری', 'Maintenance search report')), subtitle: '', meta: [[L('تعداد نتایج', 'Results'), D(sm.total)]].concat(advMeta(key)), sections };
+  }
+  function vMs(c) {
+    setTitle(L('مرکز جستجو و کارنامه', 'Search centre & work record'), L('جستجو در همهٔ بازدیدها، تعمیرات و دستورکارها — با تفکیک تخصص و فرد', 'Search all inspections, repairs and work orders — by discipline and person'));
+    c.innerHTML = `<div class="toolbar"><div style="flex:1"></div><div id="exp">${RK.exportBarHTML()}</div></div>${advHTML('ms', { kinds: true, status: true, eq: true, group: true, people: true })}<div id="res"></div>`;
+    const res = c.querySelector('#res');
+    const draw = () => {
+      const f = advFilter('ms'), a = advState('ms'), list = SS.filter(evAll(), f), sm = SS.summary(list);
+      const kp = (l, v, col) => `<div class="card kpi" style="--k:${col};margin:0"><div class="kpi-label">${l}</div><div class="kpi-value">${v}</div></div>`;
+      let person = '';
+      if (f.person) {
+        const pk = SS.norm(f.person), mine = list.filter(e => e.by.some(n => SS.norm(n).indexOf(pk) >= 0)), byD = SS.groupBy(mine, (e) => e.disc);
+        person = `<div class="card" style="margin-bottom:12px"><div style="font-weight:800;margin-bottom:8px">👤 ${L('کارنامهٔ ', 'Work record — ')}${esc(f.person)}</div><div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--text-muted)"><span>${L('بازدید', 'Inspections')}: <b>${D(sm.pm)}</b></span><span>${L('تعمیر', 'Repairs')}: <b>${D(sm.cm)}</b></span><span>${L('دستورکار', 'Work orders')}: <b>${D(sm.wo)}</b></span><span>${L('ساعت کار', 'Hours')}: <b>${num(sm.hours, 1)}</b></span><span>${L('تجهیزات متفاوت', 'Distinct equipment')}: <b>${D(sm.equipment)}</b></span></div><div style="margin-top:8px">${byD.map(g => `${discTag(g.key)} <b style="margin-inline-end:10px">${D(g.items.length)}</b>`).join('')}</div></div>`;
+      }
+      res.innerHTML = `<div class="grid kpi-row" style="margin-bottom:12px">${kp(L('کل نتایج', 'Results'), D(sm.total), 'var(--accent-2)')}${kp(L('بازدید', 'Inspections'), D(sm.pm), 'var(--green)')}${kp(L('تعمیر', 'Repairs'), D(sm.cm), 'var(--amber)')}${kp(L('دستورکار', 'Work orders'), D(sm.wo), 'var(--accent-2)')}${kp(L('نفرات', 'People'), D(sm.persons), 'var(--text-dim)')}</div>${person}
+        ${groupEvents(list.slice(0, 500), a.grp).map(g => (g.key ? `<div class="grp-head">${esc(g.key)} <span>${D(g.items.length)}</span></div>` : '') + evTable(g.items)).join('')}
+        ${list.length > 500 ? `<p class="adv-hint" style="margin:8px 4px">${L('فقط ۵۰۰ ردیف نخست نمایش داده شد؛ خروجی شامل همهٔ ' + D(list.length) + ' ردیف است.', 'Only the first 500 rows are shown; the export contains all ' + list.length + ' rows.')}</p>` : ''}`;
+      RK.bindExport(c.querySelector('#exp'), async () => buildSearchReport('ms', list), () => spec.id + '-search' + (f.person ? '-' + f.person.replace(/\s+/g, '_') : ''), toast);
+    };
+    bindAdv(c, 'ms', draw, () => vMs(c)); draw();
+  }
+
+  /* =====================================================================
+     EQUIPMENT PASSPORT (QR) — secure, view-only dossier + printable labels
+     ===================================================================== */
+  const QRB = () => { try { return localStorage.getItem('swro-qr-base') || ''; } catch (e) { return ''; } };
+  const qrBase = () => QRB() || new URL('index.html', location.href).href.split('?')[0].split('#')[0];
+  const qrUrl = (id) => qrBase() + '?eq=' + encodeURIComponent(id);
+  function passportModel(eq) {
+    const evs = SS.events(S).filter(e => e.eqId === eq.id), pms = S.pm.filter(p => p.equipmentId === eq.id);
+    const perf = evs.filter(e => e.kind === 'pm'), cms = evs.filter(e => e.kind === 'cm'), wos = evs.filter(e => e.kind === 'wo');
+    const lastOf = (a) => a.length ? a.reduce((m, e) => e.date > m ? e.date : m, '') : '';
+    const hours = wos.reduce((s, e) => s + (e.hours || 0), 0);
+    return {
+      org: L('کارخانه آب‌شیرین‌کن ۱ — رستم‌پور', 'Desalination Plant 1 — Rostampour'),
+      title: L('شناسنامه و سوابق نگهداری تجهیز', 'Equipment dossier & maintenance history'), sub: eq.name,
+      info: [[L('نام تجهیز', 'Equipment'), eq.name], [L('دسته', 'Category'), catLab(eq.category)], [L('تخصص', 'Discipline'), discLab(SS.discOfEq(eq))], [L('شماره سریال / پلاک', 'Serial / tag'), eq.serial || ''],
+        [L('محل نصب', 'Location'), eq.location || ''], [L('تاریخ نصب', 'Install date'), eq.installDate ? jStr(eq.installDate) : ''], [L('مرحلهٔ فرایند', 'Process stage'), eq.stage && SP.STAGES[eq.stage] ? lab(SP.STAGES[eq.stage]) : ''], [L('تاریخ تهیه', 'Issued'), jStr(todayISO())]],
+      kpis: [{ label: L('بازدید انجام‌شده', 'Inspections done'), value: D(perf.length) }, { label: L('تعمیر / خرابی', 'Repairs'), value: D(cms.length) }, { label: L('تعمیر باز', 'Open repairs'), value: D(cms.filter(e => e.st === 'open').length) }, { label: L('دستورکار', 'Work orders'), value: D(wos.length) }, { label: L('آخرین بازدید', 'Last inspection'), value: lastOf(perf) ? jStr(lastOf(perf)) : '—' }, { label: L('آخرین تعمیر', 'Last repair'), value: lastOf(cms) ? jStr(lastOf(cms)) : '—' }, { label: L('ساعت کار ثبت‌شده', 'Hours logged'), value: num(hours, 1) }],
+      notes: eq.notes || '',
+      sections: [
+        { title: L('برنامهٔ بازدیدهای دوره‌ای', 'Periodic inspection plan'), head: [L('بازدید', 'Inspection'), L('تناوب', 'Interval'), L('آخرین انجام', 'Last done'), L('موعد بعدی', 'Next due'), L('وضعیت', 'Status'), L('تخصص', 'Discipline')], empty: L('بازدیدی تعریف نشده است', 'No inspections defined'),
+          rows: pms.map(p => { const st = pmStat(p); return [p.title, freqL(p.freqDays), p.lastDone ? jStr(p.lastDone) : '—', jStr(st.due), st.k === 'overdue' ? L('معوق', 'Overdue') : st.k === 'soon' ? L('نزدیک موعد', 'Due soon') : L('به‌روز', 'On time'), discLab(SS.discOf(p, eq))]; }) },
+        { title: L('سابقهٔ کامل انجام بازدیدها (جدیدترین اول)', 'Full inspection history (newest first)'), head: [L('تاریخ', 'Date'), L('بازدید', 'Inspection'), L('انجام‌دهنده', 'Done by'), L('توضیحات / نتیجه', 'Notes / result'), L('تخصص', 'Discipline')], empty: L('بازدیدی انجام نشده است', 'No inspection recorded'),
+          rows: perf.slice().sort((a, b) => b.date.localeCompare(a.date)).map(e => [jStr(e.date), e.title, e.by.join('، ') || '—', e.action || '—', discLab(e.disc)]) },
+        { title: L('تعمیرات و خرابی‌ها (جدیدترین اول)', 'Repairs & failures (newest first)'), head: [L('تاریخ', 'Date'), L('شرح خرابی', 'Issue'), L('اقدام انجام‌شده', 'Action taken'), L('تکنسین', 'Technician'), L('قطعات / متریال', 'Parts'), L('وضعیت', 'Status'), L('تاریخ بسته‌شدن', 'Closed'), L('تخصص', 'Discipline')], empty: L('خرابی یا تعمیری ثبت نشده است', 'No repairs recorded'),
+          rows: cms.slice().sort((a, b) => b.date.localeCompare(a.date)).map(e => [jStr(e.date), e.title, e.action || '—', e.by.join('، ') || '—', e.materials || '—', evStatL(e), e.closedAt ? jStr(e.closedAt) : '—', discLab(e.disc)]) },
+        { title: L('دستورکارها (جدیدترین اول)', 'Work orders (newest first)'), head: [L('شماره', 'No.'), L('تاریخ', 'Date'), L('نوع', 'Type'), L('اولویت', 'Priority'), L('شرح کار', 'Description'), L('مسئول / انجام‌دهنده', 'Assignee / done by'), L('وضعیت', 'Status'), L('ساعت', 'Hours'), L('گزارش انجام', 'Completion note')], empty: L('دستورکاری ثبت نشده است', 'No work orders'),
+          rows: wos.slice().sort((a, b) => b.date.localeCompare(a.date)).map(e => [e.no || '—', jStr(e.date), woTypeL(e.type), woPrioL(e.prio), e.title, e.by.join('، ') || '—', evStatL(e), e.hours == null ? '—' : num(e.hours, 1), e.action || '—']) }]
+    };
+  }
+  function openPassport(eqId) { UI.passEq = eqId; UI.passSeen = null; go('passport'); }
+  function vPassport(c) {
+    setTitle(L('شناسنامهٔ تجهیز', 'Equipment dossier'), L('نمایش فقط‌خواندنی و امن', 'Secure view-only display'));
+    const eq = S.equipment.find(e => e.id === UI.passEq), loaded = S.equipment.length > 0 || UI.passWait > 8;
+    if (!eq) {
+      if (UI.passInst) { UI.passInst.destroy(); UI.passInst = null; }
+      UI.passWait = (UI.passWait || 0) + 1;
+      c.innerHTML = `<div class="card login-note"><h3>${loaded && UI.passWait > 8 ? L('تجهیز یافت نشد', 'Equipment not found') : L('در حال بارگذاری شناسنامه…', 'Loading the dossier…')}</h3><p style="color:var(--text-muted);font-size:13px;margin:8px 0 14px">${loaded && UI.passWait > 8 ? L('این برچسب به تجهیزی اشاره می‌کند که حذف شده یا در دسترس شما نیست.', 'This label points to equipment that was deleted or that you cannot access.') : L('لطفاً چند لحظه صبر کنید.', 'Please wait a moment.')}</p><button class="btn" id="ppHome">${L('بازگشت به داشبورد', 'Back to the dashboard')}</button></div>`;
+      document.getElementById('ppHome').onclick = () => { UI.passEq = null; go('dashboard'); };
+      if (UI.passWait <= 8) setTimeout(() => { if (S.view === 'passport') renderCurrent(); }, 900);
+      return;
+    }
+    const model = passportModel(eq), sig = JSON.stringify(model);
+    if (UI.passInst && UI.passSig === sig && c.querySelector('.pp-root')) return;       // unchanged data: keep the open viewer (and its lock state)
+    if (UI.passInst) { UI.passInst.destroy(); UI.passInst = null; }
+    const first = UI.passSeen !== eq.id; UI.passSeen = eq.id; UI.passSig = sig; UI.passWait = 0;
+    UI.passInst = window.SWRO_PASS.open(c, model, {
+      user: (window.Role && window.Role.user && window.Role.user()) || (auth.currentUser && auth.currentUser.email || '').split('@')[0] || '—', fa: isFa(),
+      labels: { close: L('بستن', 'Close'), note: L('🔒 این سند فقط برای مشاهدهٔ لحظه‌ای است: دانلود، چاپ و کپی غیرفعال است و نام شما و زمان مشاهده روی هر صفحه ثبت می‌شود.', '🔒 View-only for this moment: download, print and copy are disabled, and your name and the time are stamped on every page.'), locked: L('نمایش به‌دلیل امنیت قفل شد', 'Locked for security'), lockedSub: L('با خروج از صفحه یا عدم فعالیت، سند پنهان می‌شود.', 'The dossier hides when you leave the page or stay idle.'), unlock: L('نمایش مجدد', 'Show again'), viewOnly: L('فقط مشاهده', 'View only'), cont: L('(ادامه)', '(cont.)'), notes: L('توضیحات', 'Notes'), empty: L('موردی ثبت نشده است', 'Nothing recorded'), autoLock: L('قفل خودکار:', 'Auto-lock:') },
+      onClose: () => { UI.passInst = null; UI.passEq = null; go(allowedView('equipment') ? 'equipment' : 'dashboard'); }
+    });
+    if (first) logAct(L('مشاهدهٔ شناسنامهٔ QR', 'Viewed QR dossier'), eq.name);
+  }
+  /* ---- QR dialog + labels ---- */
+  const labelCss = `@page{size:A4;margin:8mm}*{box-sizing:border-box}body{margin:0;font-family:Tahoma,Arial,sans-serif;color:#0f2438}.sheet{display:flex;flex-wrap:wrap;gap:0}.lb{width:63mm;height:76mm;border:1px dashed #9db0c2;padding:3.5mm;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:space-between;page-break-inside:avoid}.lb .org{font-size:7.5pt;font-weight:700;color:#0b7a75}.lb svg{width:46mm;height:46mm}.lb .nm{font-size:10pt;font-weight:800;line-height:1.3;max-height:13mm;overflow:hidden}.lb .sr{font-size:7.5pt;color:#52708a}.lb .sc{font-size:7pt;color:#0f2438;border-top:1px solid #cfdbe6;padding-top:1.5mm;width:100%}.big .lb{width:100mm;height:120mm}.big .lb svg{width:76mm;height:76mm}.big .lb .nm{font-size:14pt;max-height:20mm}`;
+  function labelsHTML(list, big) {
+    const fa = isFa();
+    return `<!doctype html><html lang="${fa ? 'fa' : 'en'}" dir="${fa ? 'rtl' : 'ltr'}"><head><meta charset="utf-8"><title>QR labels</title><style>${labelCss}</style></head><body><div class="sheet ${big ? 'big' : ''}">${list.map(e => `<div class="lb"><div class="org">${esc(L('آب‌شیرین‌کن ۱ — رستم‌پور', 'Desal Plant 1 — Rostampour'))}</div>${window.SWRO_QR.svg(qrUrl(e.id), { level: 'M', margin: 2 })}<div class="nm">${esc(e.name)}</div><div class="sr">${esc(e.serial || '')} ${e.location ? '· ' + esc(e.location) : ''}</div><div class="sc">${esc(L('اسکن کنید: سوابق بازدید و تعمیرات', 'Scan: inspection & repair history'))}</div></div>`).join('')}</div></body></html>`;
+  }
+  function printLabels(list, big) {
+    if (!list.length) { toast(L('تجهیزی برای چاپ نیست', 'Nothing to print')); return; }
+    const f = document.createElement('iframe'); f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'; document.body.appendChild(f);
+    const d = f.contentWindow.document; d.open(); d.write(labelsHTML(list, big)); d.close(); UI.lastLabelHtml = labelsHTML(list, big);
+    setTimeout(() => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { console.error(e); } setTimeout(() => f.remove(), 90000); }, 450);
+    logAct(L('چاپ برچسب QR', 'Printed QR labels'), list.length === 1 ? list[0].name : D(list.length) + ' ' + L('تجهیز', 'items'));
+  }
+  function qrModal(e) {
+    modal(L('QR تجهیز — ', 'Equipment QR — ') + e.name,
+      `<div style="text-align:center"><div class="qr-box" id="qrBox">${window.SWRO_QR.svg(qrUrl(e.id), { level: 'M', margin: 2, size: 240 })}</div><div style="font-weight:800;margin-top:8px">${esc(e.name)}</div><div style="color:var(--text-muted);font-size:12.5px">${esc(e.serial || '')} ${e.location ? '· ' + esc(e.location) : ''}</div></div>
+      <div class="field" style="margin-top:12px"><label>${L('نشانی پایه‌ای که در QR نوشته می‌شود (نشانی نصب برنامه)', 'Base address written in the QR (the address of this app)')}</label><input type="text" id="qrBase" dir="ltr" value="${esc(qrBase())}"></div>
+      <div class="pend-note" style="margin-top:6px">${L('کسی که QR را اسکن کند باید با نام کاربری خودش وارد برنامه شود؛ سپس فقط شناسنامهٔ این تجهیز را به‌صورت فقط‌مشاهده می‌بیند.', 'Whoever scans the QR must sign in with their own account; they then see only this equipment’s dossier, view-only.')}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn btn-primary" id="qrPrint">🖨 ${L('چاپ برچسب', 'Print label')}</button><button class="btn" id="qrPrintBig">🖨 ${L('برچسب بزرگ', 'Large label')}</button><button class="btn" id="qrOpen">📄 ${L('دیدن شناسنامه', 'Open dossier')}</button></div>`, null);
+    const saveBase = () => { const v = document.getElementById('qrBase').value.trim(); try { if (v) localStorage.setItem('swro-qr-base', v); else localStorage.removeItem('swro-qr-base'); } catch (x) { } document.getElementById('qrBox').innerHTML = window.SWRO_QR.svg(qrUrl(e.id), { level: 'M', margin: 2, size: 240 }); };
+    document.getElementById('qrBase').oninput = saveBase;
+    document.getElementById('qrPrint').onclick = () => printLabels([e], false);
+    document.getElementById('qrPrintBig').onclick = () => printLabels([e], true);
+    document.getElementById('qrOpen').onclick = () => { document.getElementById('overlay').classList.remove('active'); openPassport(e.id); };
   }
 
   /* =====================================================================
@@ -1192,7 +1462,7 @@ export function startPlant(spec) {
   function applyNav(n) {
     const v = n && n.view;
     if (!v) return;
-    const ok = () => { if (S.ready && ['dashboard', 'entry', 'reports', 'qreport', 'health', 'limits', 'equipment', 'pm', 'cm', 'wo', 'log'].includes(v)) { if (allowedView(v)) go(v); return true; } return false; };
+    const ok = () => { if (S.ready && ['dashboard', 'entry', 'reports', 'qreport', 'health', 'limits', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport', 'log'].includes(v)) { if (v === 'passport') { UI.passEq = n.q || UI.passEq; UI.passSeen = null; UI.passWait = 0; } if (allowedView(v)) go(v); return true; } return false; };
     if (ok()) return;
     clearTimeout(applyNav._t); navTry = 0;
     (function retry() { if (ok() || ++navTry > 40) return; applyNav._t = setTimeout(retry, 300); })();
