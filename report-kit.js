@@ -97,6 +97,7 @@
     .rk-block{padding:0 28px;margin:0 0 10px;background:#fff;}
     .rk-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 28px 12px;background:#0b2a43;color:#fff;margin-bottom:14px;}
     .rk-head img{height:62px;background:#fff;border-radius:6px;padding:3px 8px;}
+    .rk-head .p{font-size:13.5px;font-weight:700;margin-bottom:6px;color:#bfe9ff;}
     .rk-head .t{font-size:19px;font-weight:700;line-height:1.5;}
     .rk-head .s{font-size:12px;opacity:.85;margin-top:2px;}
     .rk-meta{display:flex;flex-wrap:wrap;gap:6px 22px;font-size:11.5px;color:#52708a;border-bottom:2px solid #00a896;padding-bottom:8px;}
@@ -137,10 +138,11 @@
   /** Returns array of HTML strings (each is one non-splittable block) */
   RK.blocks = async function (rep) {
     const fa = RK.isFa();
-    const logo = await RK.logo();
+    const plain = !!rep.plain;                       // plain report: no logo, no developer footer
+    const logo = (plain && !rep.withLogo) ? '' : await RK.logo();
     const out = [];
     out.push(`<div class="rk-head">
-        <div><div class="t">${RK.esc(rep.title)}</div><div class="s">${RK.esc(rep.subtitle || '')}</div></div>
+        <div>${rep.preparedBy ? `<div class="p">${RK.esc(rep.preparedBy)}</div>` : ''}<div class="t">${RK.esc(rep.title)}</div><div class="s">${RK.esc(rep.subtitle || '')}</div></div>
         ${logo ? `<img src="${logo}" alt="logo">` : ''}
       </div>`);
     const now = new Date();
@@ -163,7 +165,7 @@
         out.push(`<div class="rk-block"><div class="note">${fa ? 'داده‌ای برای این بخش ثبت نشده است.' : 'No data recorded for this section.'}</div></div>`);
       }
     }
-    out.push(`<div class="rk-foot">${fa ? 'طراحی و توسعه‌دهنده: محمدرضا رستم‌پور — Rostampour Engineering Co.' : 'Designed & developed by Mohammad Reza Rostampour — Rostampour Engineering Co.'}</div>`);
+    if (!plain) out.push(`<div class="rk-foot">${fa ? 'طراحی و توسعه‌دهنده: محمدرضا رستم‌پور — Rostampour Engineering Co.' : 'Designed & developed by Mohammad Reza Rostampour — Rostampour Engineering Co.'}</div>`);
     return out;
   };
 
@@ -213,7 +215,7 @@
       const total = pdf.getNumberOfPages();
       for (let i = 1; i <= total; i++) {
         pdf.setPage(i); pdf.setFontSize(8); pdf.setTextColor(120);
-        pdf.text(`Rostampour  |  ${i} / ${total}`, PW / 2, PH - 8, { align: 'center' });
+        pdf.text(rep.plain ? `${i} / ${total}` : `Rostampour  |  ${i} / ${total}`, PW / 2, PH - 8, { align: 'center' });
       }
       pdf.save(filename + '.pdf');
     } finally { host.remove(); }
@@ -269,12 +271,13 @@
     const kids = [];
     const logo = await RK.logo();
     const header = [];
-    if (logo) {
+    if (logo && (!rep.plain || rep.withLogo)) {
       const p = dataUrlParts(logo), sz = await imgSize(logo), h = 52;
       header.push(new D.Paragraph({ shading: { type: D.ShadingType.CLEAR, fill: NAVY, color: 'auto' }, spacing: { before: 0, after: 0 }, alignment: D.AlignmentType.CENTER,
         children: [new D.ImageRun({ type: 'png', data: b64ToBytes(p.b64), transformation: { width: Math.round(h * sz.w / sz.h), height: h } })] }));
     }
     kids.push(...header);
+    if (rep.preparedBy) kids.push(para(rep.preparedBy, { spacing: { before: 0, after: 100 } }, { bold: true, size: 24, color: NAVY }));
     kids.push(para(rep.title, { spacing: { before: 160, after: 40 } }, { bold: true, size: 32, color: NAVY }));
     if (rep.subtitle) kids.push(para(rep.subtitle, {}, { size: 22, color: '52708A' }));
     const now = new Date();
@@ -308,7 +311,7 @@
         kids.push(para('', { spacing: { after: 100 } }));
       } else if (s.table) kids.push(para(fa ? 'داده‌ای برای این بخش ثبت نشده است.' : 'No data recorded for this section.', {}, { size: 18, color: '8AA0B5' }));
     }
-    kids.push(para(fa ? 'طراحی و توسعه‌دهنده: محمدرضا رستم‌پور — Rostampour Engineering Co.' : 'Designed & developed by Mohammad Reza Rostampour — Rostampour Engineering Co.', { alignment: D.AlignmentType.CENTER, spacing: { before: 200 } }, { size: 16, color: '8AA0B5' }));
+    if (!rep.plain) kids.push(para(fa ? 'طراحی و توسعه‌دهنده: محمدرضا رستم‌پور — Rostampour Engineering Co.' : 'Designed & developed by Mohammad Reza Rostampour — Rostampour Engineering Co.', { alignment: D.AlignmentType.CENTER, spacing: { before: 200 } }, { size: 16, color: '8AA0B5' }));
     const wide = (rep.sections || []).some(s => s.table && s.table.head && s.table.head.length > 7);
     const doc = new D.Document({
       creator: 'Rostampour', title: rep.title,
@@ -325,6 +328,20 @@
     const fa = RK.isFa();
     const wb = XLSX.utils.book_new();
     wb.Workbook = { Views: [{ RTL: fa }] };
+    if (rep.excelSheets && rep.excelSheets.length) {          // custom workbook (plain reports): rows as given, real numbers
+      const usedN = new Set();
+      rep.excelSheets.forEach((sh, i) => {
+        let name = String(sh.name || ('Sheet' + (i + 1))).replace(/[\\\/\?\*\[\]:]/g, ' ').slice(0, 28) || ('Sheet' + (i + 1)), k = 2, base = name;
+        while (usedN.has(name)) name = base.slice(0, 25) + ' ' + (k++);
+        usedN.add(name);
+        const ws = XLSX.utils.aoa_to_sheet(sh.rows);
+        const w = []; sh.rows.forEach(r => r.forEach((c, ci) => { const l = String(c == null ? '' : c).length; if (!w[ci] || w[ci] < l) w[ci] = l; }));
+        ws['!cols'] = w.map((l, ci) => ({ wch: Math.max(10, Math.min(60, (ci === 0 && sh.rows.length < 12 ? Math.min(l, 40) : l) + 3)) }));
+        XLSX.utils.book_append_sheet(wb, ws, name);
+      });
+      XLSX.writeFile(wb, filename + '.xlsx');
+      return;
+    }
     // summary sheet
     const sum = [[rep.title], [rep.subtitle || ''], ...(rep.meta || []).map(m => [m[0], m[1]]), []];
     (rep.sections || []).forEach(s => {

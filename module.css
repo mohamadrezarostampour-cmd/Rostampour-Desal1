@@ -182,3 +182,9 @@ body.dark-theme .pp-wrap{background:#1a2b38;}
 .pp-lock-box{background:var(--bg-elev);border:1px solid var(--border-strong);border-radius:16px;padding:22px 28px;text-align:center;box-shadow:0 14px 50px rgba(0,0,0,.3);max-width:340px;}
 @media (max-width:520px){.pp-bar-t{font-size:12.5px;}}
 @media print{body.pp-active *{visibility:hidden!important;} body.pp-active::before{content:"🔒 Printing is disabled / چاپ غیرفعال است";visibility:visible!important;position:fixed;top:40%;left:0;right:0;text-align:center;font-size:20px;}}
+
+/* ---- v7: client delivery report ---- */
+.cl-work{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.cl-work input{flex:1;min-width:0}
+.cl-wn{min-width:24px;text-align:center;font-size:12px;color:var(--text-muted)}
+.cl-act{display:flex;gap:6px;justify-content:flex-end}

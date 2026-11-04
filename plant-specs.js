@@ -20,7 +20,7 @@ const qgroup = (id, fa, en, pre, list, notes, derived) => ({
 });
 window.PLANT_SPECS = {};
 window.PLANT_SPECS.desal = {
-  id: 'desal', prefix: 'ds_', color: '#1565c0', workOrders: true,
+  id: 'desal', prefix: 'ds_', color: '#1565c0', workOrders: true, clientReport: true,
   title: { fa: 'کارخانه آبشیرین کن ۱', en: 'Desalination Plant 1' },
   subtitle: { fa: 'تولید، کیفیت، تعمیرات، بازدید و دستورکار', en: 'Production, quality, maintenance, inspections & work orders' },
   categories: [

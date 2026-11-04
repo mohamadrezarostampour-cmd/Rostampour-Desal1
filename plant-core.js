@@ -82,8 +82,8 @@ export function startPlant(spec) {
   catch (e) { db = getFirestore(fbApp); }
   const P = spec.prefix;
   const SP = window.SWRO_PFD, HL = window.SWRO_HEALTH;
-  const COLS = ['daily', 'equipment', 'pm', 'cm', 'log'].concat(spec.workOrders ? ['wo'] : []);
-  const S = { daily: [], equipment: [], pm: [], cm: [], wo: [], log: [], view: 'dashboard', ready: false, online: true, alerts: {} };
+  const COLS = ['daily', 'equipment', 'pm', 'cm', 'log'].concat(spec.workOrders ? ['wo'] : []).concat(spec.clientReport ? ['client'] : []);
+  const S = { daily: [], equipment: [], pm: [], cm: [], wo: [], log: [], client: [], clientCfg: {}, clientNotes: {}, view: 'dashboard', ready: false, online: true, alerts: {} };
   const UI = { charts: {}, an: { scope: null, mode: 'monthly', jy: curJY(), jm: isoToJ(todayISO()).month }, search: {}, filters: {} };
   let unsubs = [];
 
@@ -96,11 +96,11 @@ export function startPlant(spec) {
   const roleNow = () => (window.Role ? window.Role.forUser(auth.currentUser) : null);
   const isAdminR = () => roleNow() === 'admin';
   const canDailyR = () => { const r = roleNow(); return r === 'admin' || r === 'operator'; };
-  const allowedView = (v) => { const r = roleNow(); if (r === 'admin') return true; if (r === 'operator') return ['dashboard', 'stage', 'health', 'entry', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); if (r === 'viewer') return ['dashboard', 'stage', 'health', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); return false; };
+  const allowedView = (v) => { const r = roleNow(); if (r === 'admin') return true; if (r === 'operator') return ['dashboard', 'stage', 'health', 'entry', 'client', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); if (r === 'viewer') return ['dashboard', 'stage', 'health', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); return false; };
   const guard = (n, kind) => {
     const r = roleNow();
     if (r === 'admin') return;
-    if (r === 'operator' && ((n === 'daily' && kind !== 'del') || (n === 'log' && kind === 'add'))) return;
+    if (r === 'operator' && (((n === 'daily' || n === 'client') && kind !== 'del') || (n === 'log' && kind === 'add'))) return;
     throw new Error('forbidden');
   };
   /* offline: Firestore applies the write locally at once and syncs later, but the promise only resolves on server
@@ -109,7 +109,7 @@ export function startPlant(spec) {
 
   /* ---- offline queue: every write that the server has not acknowledged yet ---- */
   const PENDING = new Map();   // "col/id" -> { n, id, op, title, at, src:'w' (this session) | 's' (found in the local cache after a reload) }
-  const COL_LABEL = { daily: ['ثبت روزانه', 'Daily entry'], equipment: ['تجهیز', 'Equipment'], pm: ['بازدید دوره‌ای', 'Inspection'], cm: ['تعمیر / خرابی', 'Repair'], wo: ['دستورکار', 'Work order'], log: ['لاگ فعالیت', 'Activity log'] };
+  const COL_LABEL = { client: ['گزارش تحویلی کارفرما', 'Client report'], daily: ['ثبت روزانه', 'Daily entry'], equipment: ['تجهیز', 'Equipment'], pm: ['بازدید دوره‌ای', 'Inspection'], cm: ['تعمیر / خرابی', 'Repair'], wo: ['دستورکار', 'Work order'], log: ['لاگ فعالیت', 'Activity log'] };
   const OP_LABEL = { add: ['ثبت جدید', 'New'], set: ['ثبت', 'Save'], upd: ['ویرایش', 'Edit'], del: ['حذف', 'Delete'] };
   const recTitle = (n, d) => { d = d || {}; return String(d.title || d.issue || d.description || d.name || d.action || d.date || d.no || '').slice(0, 80); };
   let pendTimer = null;
@@ -145,6 +145,8 @@ export function startPlant(spec) {
         S[n] = arr; S.online = true; setStatus(); scheduleRender();
       }, (err) => { console.error('snapshot', n, err); S.online = false; setStatus(); }));
     });
+    if (spec.clientReport) unsubs.push(onSnapshot(doc(db, 'settings', 'clientNotes'), (s) => { S.clientNotes = s.exists() ? s.data() : {}; scheduleRender(); }, () => { }));
+    if (spec.clientReport) unsubs.push(onSnapshot(doc(db, 'settings', 'clientReport'), (s) => { S.clientCfg = s.exists() ? s.data() : {}; scheduleRender(); }, () => { }));
     unsubs.push(onSnapshot(doc(db, 'settings', 'alerts'), (s) => { S.alerts = s.exists() ? s.data() : {}; scheduleRender(); }, () => { }));
   }
   function pendModal() {
@@ -223,6 +225,7 @@ export function startPlant(spec) {
     ['cm', 'wrench', ['تعمیرات و خرابی‌ها', 'Repairs & failures']],
     ['msearch', 'search', ['مرکز جستجو و کارنامه', 'Search centre & work record']]
   ];
+  if (spec.clientReport) NAV.splice(2, 0, ['client', 'doc', ['گزارش تحویلی کارفرما', 'Client delivery report']]);
   if (spec.workOrders) NAV.push(['wo', 'list', ['دستورکار', 'Work orders']]);
   NAV.push(['log', 'clock', ['لاگ فعالیت', 'Activity log']]);
 
@@ -260,7 +263,7 @@ export function startPlant(spec) {
     if (isAdminR()) return;
     c.querySelectorAll('.rk-exportbar').forEach(el => el.remove());
     if (S.view === 'entry') { c.querySelectorAll('[data-d]').forEach(el => el.remove()); return; }
-    if (S.view === 'stage' || S.view === 'dashboard') return;
+    if (S.view === 'stage' || S.view === 'dashboard' || S.view === 'client') return;
     c.querySelectorAll('#add, #lbl').forEach(el => el.remove());
     const hasActions = !!c.querySelector('.row-actions');
     c.querySelectorAll('.row-actions').forEach(el => { const td = el.closest('td'); (td || el).remove(); });
@@ -269,9 +272,10 @@ export function startPlant(spec) {
   function renderCurrent() {
     if (!allowedView(S.view)) S.view = 'dashboard';
     destroyCharts();
-    const f = { dashboard: vDash, stage: vStage, health: vHealth, qreport: vQReport, limits: vLimits, entry: vEntry, reports: vReports, equipment: vEquip, pm: vPm, cm: vCm, wo: vWo, msearch: vMs, passport: vPassport, log: vLog }[S.view];
+    const f = { dashboard: vDash, stage: vStage, health: vHealth, qreport: vQReport, limits: vLimits, entry: vEntry, client: vClient, reports: vReports, equipment: vEquip, pm: vPm, cm: vCm, wo: vWo, msearch: vMs, passport: vPassport, log: vLog }[S.view];
     if (!f) return;
     f(document.getElementById('content'));
+    if (S.view !== 'client') document.getElementById('content').dataset.view = S.view;
     lockUI(document.getElementById('content'));
     [['equipment', S.equipment.length], ['pm', S.pm.length], ['cm', S.cm.filter(c => c.status === 'open').length], ['wo', S.wo.filter(w => w.status !== 'done' && w.status !== 'cancelled').length]].forEach(([id, n]) => {
       const e = document.getElementById('cnt_' + id); if (e) { e.style.display = n ? '' : 'none'; e.textContent = D(n); }
@@ -862,6 +866,201 @@ export function startPlant(spec) {
     });
     const chk = () => { const m = document.querySelector('.modal'); if (!m || !m.querySelector('#f_date')) return; const d = dateVal(m, 'f_date'); const ex = S.daily.find(r => (r.date || r.id) === d); m.querySelector('#dayHint').style.display = (ex && !existing) ? '' : 'none'; if (ex && !existing) { ALLP.forEach(p => { const el = m.querySelector('#f_' + p.key); if (el && el.value === '' && ex.values && ex.values[p.key] != null) el.value = ex.values[p.key]; }); } };
     document.querySelectorAll('#f_date select').forEach(s => s.addEventListener('change', chk)); chk();
+  }
+
+  /* =====================================================================
+     CLIENT DELIVERY REPORT  (گزارش تحویلی به کارفرما)
+     daily entry of the plant output / production figures + manual list of the work done;
+     exports (PDF / Word / Excel) daily · monthly · yearly — plain, no logo
+     ===================================================================== */
+  const CLX = () => window.SWRO_CLIENT;
+  const clParams = () => CLX().merge(((S.clientCfg || {}).params) || []);
+  const clActive = () => clParams().filter(p => p.on !== false);
+  const clName = (p) => isFa() ? p.fa : (p.en || p.fa);
+  const clRec = (iso) => (S.client || []).find(r => (r.date || r.id) === iso);
+  function clDraftFor(iso) {
+    const r = clRec(iso) || {}, v = {};
+    Object.keys(r.v || {}).forEach(k => { v[k] = r.v[k] == null ? '' : String(r.v[k]); });
+    return { date: iso, v, reason: r.outageReason || '', rnote: r.outageNote || '', works: (r.works || []).slice(), note: r.note || '', dirty: false };
+  }
+  function clH() {
+    return { fa: isFa(), L, D, num, jStr, mName, isoToJ, jToISO, daysInJ, plant: lab(spec.title),
+      chart: async (cfg) => { try { return await RK.chartImage(cfg, 900, 320); } catch (e) { return ''; } },
+      barCfg: (labels, label, data, color) => chartCfg('bar', labels, [bar(label, data, color)]),
+      lineCfg: (labels, label, data, color) => chartCfg('line', labels, [line(label, data, color)], { zero: false }) };
+  }
+  function vClient(c) {
+    const a = document.activeElement;
+    if (c.dataset.view === 'client' && UI.cl && ((UI.cl.draft && UI.cl.draft.dirty) || (UI.cl.exp && UI.cl.exp.rd)) && a && c.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;   // do not disturb typing
+    clRender(c);
+  }
+  function clRender(c) {
+    setTitle(L('گزارش تحویلی به کارفرما', 'Client delivery report'), L('ثبت روزانهٔ تولید و خروجی کارخانه و دریافت گزارش روزانه، ماهانه و سالانه', 'Daily record of plant output & production, with daily / monthly / yearly reports'));
+    const t = isoToJ(todayISO()), U = UI.cl = UI.cl || { exp: { kind: 'monthly', jy: t.year, jm: t.month, jd: t.day } };
+    if (!U.draft || !U.draft.dirty) U.draft = clDraftFor(U.draft ? U.draft.date : todayISO());
+    const d = U.draft, ps = clActive(), all = clParams(), admin = isAdminR(), ex = U.exp;
+    const rkey = () => ex.kind === 'daily' ? 'daily-' + jToISO(ex.jy, ex.jm, Math.min(ex.jd, daysInJ(ex.jy, ex.jm))) : ex.kind === 'monthly' ? 'monthly-' + ex.jy + '-' + String(ex.jm).padStart(2, '0') : 'yearly-' + ex.jy;
+    if (ex.rk !== rkey()) { ex.rk = rkey(); ex.rd = false; ex.rt = (S.clientNotes || {})[ex.rk] || ''; } else if (!ex.rd) ex.rt = (S.clientNotes || {})[ex.rk] || '';
+    if (ex.logo === undefined) ex.logo = false;
+    const existing = clRec(d.date);
+    const reasons = [['', L('— بدون خاموشی / نامشخص —', '— none / unspecified —')]].concat(Object.keys(CLX().REASON).map(k => [k, L(CLX().REASON[k][0], CLX().REASON[k][1])]));
+    const worksHTML = d.works.map((w, i) => `<div class="cl-work"><span class="cl-wn">${D(i + 1)}</span><input type="text" data-w="${i}" value="${esc(w)}" placeholder="${esc(L('شرح کار انجام‌شده…', 'Work description…'))}"><span class="icon-sm" data-wd="${i}" title="${L('حذف', 'Delete')}">🗑</span></div>`).join('');
+    const rows = [...(S.client || [])].sort((x, y) => (y.date || y.id).localeCompare(x.date || x.id)).slice(0, 31);
+    const prodP = ps.find(p => p.id === 'prod');
+    const st = 'padding:8px 10px;border-radius:9px;border:1px solid var(--border-strong,#c5d3dc);background:var(--panel-2,#eef5f7);color:var(--text,#0f2438);font-family:inherit;font-size:13px;';
+    const years = []; for (let y = t.year - 6; y <= t.year + 1; y++) years.push(y);
+    c.dataset.view = 'client';
+    c.innerHTML = `
+      <div class="card" style="padding:16px 18px;">
+        <div class="panel-title"><h3>📝 ${L('ثبت اطلاعات روز', 'Record of the day')}</h3>
+          <div class="toolbar" style="margin:0"><button class="btn btn-sm" id="clPull" title="${esc(L('مقادیر خالی را از «ثبت اطلاعات روزانه» پر می‌کند', 'Fills empty values from the daily data entry'))}">⇩ ${L('دریافت از ثبت روزانه', 'Fill from daily data')}</button>
+          ${admin ? `<button class="btn btn-sm" id="clParams">⚙ ${L('مدیریت پارامترها', 'Manage parameters')} <span class="u">(${D(ps.length)}/${D(all.length)})</span></button>` : ''}</div></div>
+        ${dateField('cl_date', L('تاریخ (شمسی)', 'Date (Jalali)'), d.date)}
+        <div class="notice" id="clHint" style="margin:0 0 10px;display:${existing && !d.dirty ? '' : 'none'}">ℹ️ ${L('برای این تاریخ قبلاً اطلاعات ثبت شده؛ ذخیره، آن را ویرایش می‌کند.', 'A record already exists for this date; saving will update it.')}</div>
+        <div class="fgroup"><div class="fg-title">${L('پارامترهای روزانه', 'Daily parameters')}</div>
+          <div class="field-row">${ps.map(p => `<div class="field"><label>${esc(clName(p))}${p.unit ? `<span class="u">(${esc(p.unit)})</span>` : ''}</label><input type="number" inputmode="decimal" step="any" data-cp="${esc(p.id)}" value="${esc(d.v[p.id] == null ? '' : d.v[p.id])}" ${p.min !== undefined ? `min="${p.min}"` : ''} ${p.max !== undefined ? `max="${p.max}"` : ''}></div>`).join('') || `<div style="color:var(--text-muted);font-size:13px">${L('هیچ پارامتری فعال نیست.', 'No parameter is enabled.')}</div>`}</div></div>
+        <div class="fgroup"><div class="fg-title">${L('خاموشی (قطع برق یا درخواست کارفرما)', 'Shutdown (power cut or client request)')}</div>
+          <div class="field-row"><div class="field"><label>${L('علت خاموشی', 'Reason')}</label><select data-f="reason">${reasons.map(r => `<option value="${esc(r[0])}" ${r[0] === d.reason ? 'selected' : ''}>${esc(r[1])}</option>`).join('')}</select></div>
+          <div class="field"><label>${L('توضیح خاموشی (اختیاری)', 'Shutdown note (optional)')}</label><input type="text" data-f="rnote" value="${esc(d.rnote)}"></div></div></div>
+        <div class="fgroup"><div class="fg-title">${L('کارهای انجام‌شده (ورود دستی)', 'Work carried out (manual list)')}</div>
+          <div id="clWorks">${worksHTML}</div>
+          <div class="toolbar" style="margin-top:8px"><button class="btn btn-sm" id="clWadd">＋ ${L('افزودن کار', 'Add item')}</button><button class="btn btn-sm btn-ghost" id="clWwo">⇩ ${L('دستورکارهای انجام‌شدهٔ این روز', 'Work orders completed this day')}</button></div></div>
+        <div class="field"><label>${L('توضیحات (اختیاری)', 'Remarks (optional)')}</label><textarea data-f="note">${esc(d.note)}</textarea></div>
+        <div class="toolbar"><button class="btn btn-primary" id="clSave">💾 ${L('ذخیره اطلاعات روز', 'Save the day')}</button></div>
+      </div>
+      <div class="card" style="padding:0;margin-top:14px;"><div class="panel-title" style="padding:12px 16px 0"><h3>${L('آخرین روزهای ثبت‌شده', 'Latest recorded days')}</h3></div>
+        <div class="table-wrap" style="border:none;max-height:44vh;overflow:auto;"><table><thead><tr><th>${L('تاریخ', 'Date')}</th>${prodP ? `<th>${esc(clName(prodP))} ${prodP.unit ? `<span style="font-weight:400">(${esc(prodP.unit)})</span>` : ''}</th>` : ''}<th>${L('پارامتر ثبت‌شده', 'Values')}</th><th>${L('کارها', 'Work items')}</th><th></th></tr></thead>
+        <tbody>${rows.length ? rows.map(r => { const nv = Object.values(r.v || {}).filter(x => x !== null && x !== '' && x !== undefined).length; return `<tr><td class="cell-strong cell-mono">${jStr(r.date || r.id)}</td>${prodP ? `<td class="cell-mono">${(r.v || {}).prod == null ? '—' : num(r.v.prod, prodP.dec)}</td>` : ''}<td class="cell-mono">${D(nv)}</td><td class="cell-mono">${D((r.works || []).length)}</td>
+          <td><div class="cl-act"><span class="icon-sm" data-ce="${esc(r.id)}" title="${L('ویرایش', 'Edit')}">✎</span>${admin ? `<span class="icon-sm" data-cd="${esc(r.id)}" title="${L('حذف', 'Delete')}">🗑</span>` : ''}</div></td></tr>`; }).join('') : `<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px">${L('هنوز روزی ثبت نشده است.', 'No day recorded yet.')}</td></tr>`}</tbody></table></div></div>
+      ${admin ? `<div class="card" style="padding:14px 16px;margin-top:14px;border-inline-start:4px solid var(--mc,#1565c0)">
+        <div style="font-weight:800;font-size:14px;margin-bottom:4px">📑 ${L('خروجی گزارش (بدون لوگو)', 'Report export (no logo)')}</div>
+        <div style="font-size:12px;color:var(--text-muted,#52708a);margin-bottom:10px;line-height:1.9">${L('بالای گزارش: «تهیه کننده: محمدرضا رستم پور». فقط پارامترهای فعال در گزارش می‌آید.', 'The report starts with “Prepared by: Mohammad Reza Rostampour”. Only the enabled parameters are included.')}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center" id="clExp">
+          <select id="ce_kind" style="${st}"><option value="daily" ${ex.kind === 'daily' ? 'selected' : ''}>${L('روزانه', 'Daily')}</option><option value="monthly" ${ex.kind === 'monthly' ? 'selected' : ''}>${L('ماهانه', 'Monthly')}</option><option value="yearly" ${ex.kind === 'yearly' ? 'selected' : ''}>${L('سالانه', 'Yearly')}</option></select>
+          <select id="ce_y" style="${st}">${years.map(y => `<option value="${y}" ${y === ex.jy ? 'selected' : ''}>${D(y)}</option>`).join('')}</select>
+          <select id="ce_m" style="${st}">${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${i + 1 === ex.jm ? 'selected' : ''}>${mName(i + 1)}</option>`).join('')}</select>
+          <select id="ce_d" style="${st}">${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}" ${i + 1 === ex.jd ? 'selected' : ''}>${D(i + 1)}</option>`).join('')}</select>
+          <button class="btn btn-primary" data-ce-x="pdf">📄 PDF</button><button class="btn" data-ce-x="word">📝 Word</button><button class="btn" data-ce-x="excel">📊 Excel</button>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" id="ce_logo" ${ex.logo ? 'checked' : ''}> ${L('با لوگو (PDF / Word)', 'With logo (PDF / Word)')}</label></div>
+        <div class="field" style="margin:12px 0 0"><label>${L('توضیحات کلی (آخر گزارش — برای همین بازه ذخیره می‌شود؛ خالی = در گزارش نمی‌آید)', 'General remarks (end of the report — saved for this period; empty = not printed)')}</label><textarea id="ce_rem" rows="3" placeholder="${esc(L('توضیحاتی که می‌خواهید برای کارفرما در انتهای گزارش بیاید…', 'Remarks for the client at the end of the report…'))}">${esc(ex.rt)}</textarea></div></div>` : ''}`;
+
+    /* ---- form wiring (every edit goes to the draft, so a background refresh never loses typing) ---- */
+    const dirty = () => { d.dirty = true; };
+    c.querySelectorAll('[data-cp]').forEach(i => i.oninput = () => { d.v[i.dataset.cp] = i.value; dirty(); });
+    c.querySelectorAll('[data-f]').forEach(i => { i.oninput = i.onchange = () => { d[i.dataset.f] = i.value; dirty(); }; });
+    c.querySelectorAll('[data-w]').forEach(i => i.oninput = () => { d.works[+i.dataset.w] = i.value; dirty(); });
+    c.querySelectorAll('[data-wd]').forEach(b => b.onclick = () => { d.works.splice(+b.dataset.wd, 1); dirty(); clRender(c); });
+    document.getElementById('clWadd').onclick = () => { d.works.push(''); dirty(); clRender(c); const ins = c.querySelectorAll('[data-w]'); if (ins.length) ins[ins.length - 1].focus(); };
+    document.getElementById('clWwo').onclick = () => {
+      const list = (S.wo || []).filter(w => w.status === 'done' && String(w.completedAt || '').slice(0, 10) === d.date).map(w => String(w.description || '').trim()).filter(Boolean);
+      const add = list.filter(x => !d.works.includes(x));
+      if (!add.length) { toast(L('دستورکار انجام‌شده‌ای برای این روز یافت نشد', 'No completed work order found for this day')); return; }
+      d.works.push(...add); dirty(); clRender(c); toast(L('دستورکارهای انجام‌شده افزوده شد: ', 'Added: ') + D(add.length));
+    };
+    const loadDate = (iso) => { U.draft = clDraftFor(iso); clRender(c); };
+    c.querySelectorAll('#cl_date select').forEach(s => s.onchange = () => {
+      const iso = dateVal(c, 'cl_date');
+      if (iso === d.date) return;
+      if (d.dirty) { modal(L('تغییرات ذخیره‌نشده', 'Unsaved changes'), `<div style="font-size:14px">${L('تغییرات این روز ذخیره نشده است. با رفتن به تاریخ دیگر دور ریخته می‌شود.', 'The changes of this day are not saved and will be discarded.')}</div>`, async () => { loadDate(iso); }, { saveLabel: L('دور ریختن و رفتن', 'Discard & go') }); const dl = document.getElementById('cl_date'); if (dl) { const p = isoToJ(d.date); dl.querySelector('[data-p=y]').value = p.year; dl.querySelector('[data-p=m]').value = p.month; dl.querySelector('[data-p=d]').value = p.day; } return; }
+      loadDate(iso);
+    });
+    document.getElementById('clPull').onclick = () => {
+      const r = S.daily.find(x => (x.date || x.id) === d.date);
+      if (!r || !r.values) { toast(L('برای این روز در «ثبت اطلاعات روزانه» چیزی ثبت نشده', 'Nothing in the daily data entry for this day')); return; }
+      let n = 0; ps.forEach(p => { const v = p.src ? r.values[p.src] : null; if (v !== null && v !== undefined && v !== '' && (d.v[p.id] === undefined || d.v[p.id] === '')) { d.v[p.id] = String(v); n++; } });
+      if (n) { dirty(); clRender(c); } toast(n ? L('مقادیر دریافت شد: ', 'Values filled: ') + D(n) : L('مقدار خالی برای پر کردن نبود', 'No empty value to fill'));
+    };
+    document.getElementById('clSave').onclick = async () => {
+      const values = Object.assign({}, (existing && existing.v) || {}); let bad = null;
+      ps.forEach(p => {
+        const raw = toEn(String(d.v[p.id] == null ? '' : d.v[p.id])).trim();
+        if (raw === '') { values[p.id] = null; return; }
+        const n = Number(raw); if (isNaN(n)) { bad = clName(p); return; }
+        if ((p.min !== undefined && n < p.min) || (p.max !== undefined && n > p.max)) { bad = clName(p) + ` (${p.min !== undefined ? p.min : ''}–${p.max !== undefined ? p.max : ''})`; return; }
+        values[p.id] = n;
+      });
+      if (bad) { toast(L('مقدار نامعتبر: ', 'Invalid value: ') + bad); return; }
+      const works = d.works.map(w => String(w || '').trim()).filter(Boolean);
+      if (Object.values(values).every(v => v === null || v === undefined) && !works.length && !String(d.note).trim()) { toast(L('حداقل یک مقدار یا کار وارد کنید', 'Enter at least one value or work item')); return; }
+      try {
+        await fbSet('client', d.date, { date: d.date, v: values, outageReason: d.reason || '', outageNote: String(d.rnote || '').trim(), works, note: String(d.note || '').trim(), by: (window.Role && window.Role.user && window.Role.user()) || '', updatedAt: new Date().toISOString() });
+        logAct(existing ? L('ویرایش گزارش تحویلی کارفرما', 'Updated client report') : L('ثبت گزارش تحویلی کارفرما', 'Entered client report'), jStr(d.date));
+        U.draft.dirty = false; toast(L('ذخیره شد', 'Saved'));
+        clRender(c);
+      } catch (e) { console.error(e); }
+    };
+    c.querySelectorAll('[data-ce]').forEach(b => b.onclick = () => { if (d.dirty) { toast(L('ابتدا تغییرات فعلی را ذخیره کنید', 'Save the current changes first')); return; } loadDate(b.dataset.ce); try { window.scrollTo(0, 0); c.scrollTop = 0; } catch (e) { } });
+    c.querySelectorAll('[data-cd]').forEach(b => b.onclick = () => confirmDel(L('گزارش روز ', 'Delete client report of ') + jStr(b.dataset.cd) + L(' حذف شود؟', '?'), async () => { await fbDel('client', b.dataset.cd); logAct(L('حذف گزارش تحویلی کارفرما', 'Deleted client report'), jStr(b.dataset.cd)); if (U.draft.date === b.dataset.cd) U.draft = clDraftFor(b.dataset.cd); }));
+    const pm = document.getElementById('clParams'); if (pm) pm.onclick = clParamsModal;
+
+    /* ---- export ---- */
+    const kindEl = document.getElementById('ce_kind');
+    if (kindEl) {
+      const sync = () => { document.getElementById('ce_m').style.display = kindEl.value === 'yearly' ? 'none' : ''; document.getElementById('ce_d').style.display = kindEl.value === 'daily' ? '' : 'none'; };
+      const remEl = document.getElementById('ce_rem'), logoEl = document.getElementById('ce_logo');
+      const saveRem = async () => {
+        if (!ex.rd) return; const key = ex.rk, text = ex.rt.trim();
+        try { await quick(setDoc(doc(db, 'settings', 'clientNotes'), { [key]: text, updatedAt: new Date().toISOString() }, { merge: true })); S.clientNotes = Object.assign({}, S.clientNotes, { [key]: text }); ex.rd = false; } catch (e) { console.error(e); toast(L('توضیحات ذخیره نشد', 'Remarks not saved')); }
+      };
+      remEl.oninput = () => { ex.rt = remEl.value; ex.rd = true; };
+      remEl.onchange = saveRem;
+      logoEl.onchange = () => { ex.logo = logoEl.checked; };
+      ['ce_kind', 'ce_y', 'ce_m', 'ce_d'].forEach(id => document.getElementById(id).onchange = async () => { await saveRem(); ex.kind = kindEl.value; ex.jy = +document.getElementById('ce_y').value; ex.jm = +document.getElementById('ce_m').value; ex.jd = +document.getElementById('ce_d').value; sync(); clRender(c); });
+      sync();
+      c.querySelectorAll('[data-ce-x]').forEach(btn => btn.onclick = async () => {
+        const k = btn.dataset.ceX, old = btn.textContent; btn.disabled = true; btn.textContent = '…';
+        try {
+          const kind = kindEl.value, jy = +document.getElementById('ce_y').value, jm = +document.getElementById('ce_m').value, jd = Math.min(+document.getElementById('ce_d').value, daysInJ(jy, jm));
+          let rg;
+          if (kind === 'daily') { const iso = jToISO(jy, jm, jd); rg = { kind, from: iso, to: iso, label: jStr(iso), jy, jm, jd }; }
+          else if (kind === 'monthly') rg = { kind, from: jToISO(jy, jm, 1), to: jToISO(jy, jm, daysInJ(jy, jm)), label: mName(jm) + ' ' + D(jy), jy, jm, jd: 0 };
+          else rg = { kind, from: jToISO(jy, 1, 1), to: jToISO(jy, 12, daysInJ(jy, 12)), label: L('سال ', 'Year ') + D(jy), jy, jm: 0, jd: 0 };
+          await saveRem();
+          const rep = await CLX().build(kind, rg, { params: clActive(), days: S.client || [], remarks: ex.rt }, clH());
+          rep.withLogo = !!ex.logo;
+          const name = 'Client-Report-' + { daily: 'Daily', monthly: 'Monthly', yearly: 'Yearly' }[kind] + '-' + (kind === 'daily' ? rg.from : kind === 'monthly' ? jy + '-' + String(jm).padStart(2, '0') : jy);
+          if (k === 'pdf') await RK.pdf(rep, name); else if (k === 'word') await RK.word(rep, name); else await RK.excel(rep, name);
+          toast(L('گزارش آماده شد', 'Report ready'));
+        } catch (e) { console.error(e); toast(L('خطا در ساخت گزارش — اتصال اینترنت را بررسی کنید', 'Report failed — check your connection')); }
+        btn.disabled = false; btn.textContent = old;
+      });
+    }
+  }
+
+  /* parameter manager: enable / disable, rename, unit, decimals, aggregation, order, add / delete own parameters */
+  function clParamsModal() {
+    if (!isAdminR()) return;
+    const aggs = CLX().AGG;
+    const rowH = (p) => `<tr data-id="${esc(p.id)}" data-b="${p.builtin ? 1 : 0}"><td style="text-align:center"><input type="checkbox" class="po" ${p.on !== false ? 'checked' : ''}></td>
+      <td><input type="text" class="pf" value="${esc(p.fa)}" style="min-width:130px"></td><td><input type="text" class="pe" value="${esc(p.en || '')}" placeholder="English" style="min-width:110px"></td>
+      <td><input type="text" class="pu" value="${esc(p.unit || '')}" style="width:68px"></td><td><input type="number" class="pd" min="0" max="6" value="${p.dec}" style="width:56px"></td>
+      <td><select class="pa">${Object.keys(aggs).map(k => `<option value="${k}" ${p.agg === k ? 'selected' : ''}>${esc(L(aggs[k][0], aggs[k][1]))}</option>`).join('')}</select></td>
+      <td style="white-space:nowrap"><span class="icon-sm" data-mv="-1" title="↑">▲</span><span class="icon-sm" data-mv="1" title="↓">▼</span>${p.builtin ? '' : `<span class="icon-sm" data-rm="1" title="${L('حذف', 'Delete')}">🗑</span>`}</td></tr>`;
+    const body = `<div class="notice" style="margin-bottom:10px">ℹ️ <div>${L('تیک = پارامتر در فرم ثبت و گزارش‌ها بیاید. با برداشتن تیک، پارامتر غیرفعال می‌شود و در گزارش نمی‌آید (مقادیر قبلی حفظ می‌شود). پارامتر جدید با نام، واحد و نحوهٔ جمع‌بندی (میانگین / مجموع / آخرین) اضافه کنید.', 'Tick = the parameter appears in the entry form and reports. Untick to disable it (stored values are kept). Add a new parameter with its name, unit and aggregation (average / total / last).')}</div></div>
+      <div class="table-wrap" style="max-height:52vh;overflow:auto"><table><thead><tr><th>${L('فعال', 'On')}</th><th>${L('نام (فارسی)', 'Name (FA)')}</th><th>${L('نام انگلیسی', 'Name (EN)')}</th><th>${L('واحد', 'Unit')}</th><th>${L('اعشار', 'Dec.')}</th><th>${L('جمع‌بندی ماهانه/سالانه', 'Monthly / yearly')}</th><th></th></tr></thead><tbody id="pmBody">${clParams().map(rowH).join('')}</tbody></table></div>
+      <div class="toolbar" style="margin-top:10px"><button class="btn btn-sm" id="pmAdd">＋ ${L('پارامتر جدید', 'New parameter')}</button></div>`;
+    modal(L('مدیریت پارامترهای گزارش تحویلی', 'Client report parameters'), body, async (m) => {
+      const out = []; let bad = false;
+      m.querySelectorAll('#pmBody tr').forEach(tr => {
+        const fa = tr.querySelector('.pf').value.trim(); if (!fa) { bad = true; return; }
+        out.push({ id: tr.dataset.id, fa, en: tr.querySelector('.pe').value.trim(), unit: tr.querySelector('.pu').value.trim(), dec: Math.max(0, Math.min(6, parseInt(toEn(tr.querySelector('.pd').value), 10) || 0)), agg: tr.querySelector('.pa').value, on: tr.querySelector('.po').checked });
+      });
+      if (bad) { toast(L('نام پارامتر نباید خالی باشد', 'Parameter name must not be empty')); return false; }
+      const cfg = { params: out, updatedAt: new Date().toISOString() };
+      await quick(setDoc(doc(db, 'settings', 'clientReport'), cfg));
+      S.clientCfg = cfg; logAct(L('ویرایش پارامترهای گزارش تحویلی', 'Client report parameters changed'), D(out.filter(p => p.on).length) + '/' + D(out.length));
+      toast(L('پارامترها ذخیره شد', 'Parameters saved')); renderCurrent();
+    });
+    const m = document.querySelector('.modal'), tb = m.querySelector('#pmBody');
+    m.querySelector('#pmAdd').onclick = () => {
+      const id = 'c' + Date.now().toString(36); tb.insertAdjacentHTML('beforeend', rowH({ id, fa: '', en: '', unit: '', dec: 2, agg: 'avg', on: true, builtin: false }));
+      const last = tb.lastElementChild; last.querySelector('.pf').focus(); last.scrollIntoView({ block: 'nearest' });
+    };
+    tb.onclick = (e) => {
+      const t = e.target, tr = t.closest('tr'); if (!tr) return;
+      if (t.dataset.rm) tr.remove();
+      else if (t.dataset.mv) { const dir = +t.dataset.mv; if (dir < 0 && tr.previousElementSibling) tb.insertBefore(tr, tr.previousElementSibling); else if (dir > 0 && tr.nextElementSibling) tb.insertBefore(tr.nextElementSibling, tr); }
+    };
   }
 
   /* =====================================================================
@@ -1462,7 +1661,7 @@ export function startPlant(spec) {
   function applyNav(n) {
     const v = n && n.view;
     if (!v) return;
-    const ok = () => { if (S.ready && ['dashboard', 'entry', 'reports', 'qreport', 'health', 'limits', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport', 'log'].includes(v)) { if (v === 'passport') { UI.passEq = n.q || UI.passEq; UI.passSeen = null; UI.passWait = 0; } if (allowedView(v)) go(v); return true; } return false; };
+    const ok = () => { if (S.ready && ['dashboard', 'entry', 'client', 'reports', 'qreport', 'health', 'limits', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport', 'log'].includes(v)) { if (v === 'passport') { UI.passEq = n.q || UI.passEq; UI.passSeen = null; UI.passWait = 0; } if (allowedView(v)) go(v); return true; } return false; };
     if (ok()) return;
     clearTimeout(applyNav._t); navTry = 0;
     (function retry() { if (ok() || ++navTry > 40) return; applyNav._t = setTimeout(retry, 300); })();
