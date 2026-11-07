@@ -245,7 +245,7 @@ export function startPlant(spec) {
       <div class="scrim" id="scrim"></div>
       <div class="main">
         <div class="topbar"><div style="display:flex;align-items:center;gap:12px;"><button class="menu-btn" id="menuBtn">☰</button>
-          <div><h1 id="pgTitle"></h1><div class="sub" id="pgSub"></div></div></div><button class="pend-chip" id="pendChip" type="button" style="display:none"></button></div>
+          <div><h1 id="pgTitle"></h1><div class="sub" id="pgSub"></div></div></div><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-ghost" id="presBtn" type="button" title="تمام‌صفحه + افقی برای نمایش روی تلویزیون/مانیتور">🖥 <span class="pres-lbl"></span></button><button class="pend-chip" id="pendChip" type="button" style="display:none"></button></div></div>
         <div class="content" id="content"></div>
       </div></div>
       <div class="overlay" id="overlay"><div class="modal"></div></div><div class="toast" id="toast"></div>`;
@@ -253,6 +253,7 @@ export function startPlant(spec) {
     document.getElementById('menuBtn').onclick = () => { document.getElementById('sidebar').classList.add('open'); document.getElementById('scrim').classList.add('show'); };
     document.getElementById('scrim').onclick = closeSide;
     document.getElementById('pendChip').onclick = pendModal;
+    presentInit();
     setStatus();
   }
   function closeSide() { document.getElementById('sidebar').classList.remove('open'); document.getElementById('scrim').classList.remove('show'); }
@@ -547,6 +548,24 @@ export function startPlant(spec) {
       const res = SP.simulate(sim.off, simLatest, plantCfg());
       pn.innerHTML = SP.simPanel(res, { fa: isFa(), name: (k) => PBY[k] ? lab(PBY[k]) : k, valOf: simLatest, prodBase: simLatest('prod') });
     } else pn.innerHTML = '';
+  }
+  /* ---------- presentation mode: full screen + landscape + screen kept on (TV / monitor via cast, HDMI/USB-C, DeX) ----------
+     Browsers require a user tap for full screen / orientation lock, so this is one button, not automatic. */
+  let wakeLock = null;
+  const isPres = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+  function presLabel() { const b = document.querySelector('#presBtn .pres-lbl'); if (b) b.textContent = isPres() ? L('خروج از نمایش', 'Exit display') : L('حالت نمایش', 'Display mode'); document.body.classList.toggle('present', isPres()); }
+  async function presToggle() {
+    try {
+      if (isPres()) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); try { screen.orientation.unlock(); } catch (e) {} if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; } return; }
+      const el = document.documentElement; await (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+      try { await screen.orientation.lock('landscape'); } catch (e) { /* desktop / unsupported: ignore */ }
+      try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+    } catch (e) { toast(L('مرورگر تمام‌صفحه را اجازه نداد. از منوی مرورگر «Add to Home screen / نصب برنامه» را بزنید.', 'Full screen was blocked by the browser.')); }
+    presLabel();
+  }
+  function presentInit() {
+    const b = document.getElementById('presBtn'); if (!b) return; b.onclick = presToggle; presLabel();
+    if (!window.__presBound) { window.__presBound = 1; ['fullscreenchange', 'webkitfullscreenchange'].forEach(ev => document.addEventListener(ev, presLabel)); document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible' && isPres() && !wakeLock) { try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {} } }); }
   }
   /* ---------- specification modal (equipment / valve / pipe) from the contractor catalog ---------- */
   const specRows = (rows) => `<table style="width:100%;border-collapse:collapse;font-size:13px">${rows.map(r => `<tr><td style="padding:6px 8px;border-bottom:1px solid var(--border);color:var(--text-muted);width:38%;vertical-align:top">${esc(isFa() ? r[0] : r[1])}</td><td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600;direction:ltr;text-align:${isFa() ? 'right' : 'left'};unicode-bidi:plaintext">${esc(r[2])}</td></tr>`).join('')}</table>`;
