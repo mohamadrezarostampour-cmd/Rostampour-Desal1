@@ -1,6 +1,6 @@
 /* =========================================================================
    Rostampour SWRO NV — site PFD (dashboard) + stage sub-PFDs + out-of-service simulator
-   Plain script: window.SWRO_PFD = { STAGES, STAGE_ORDER, POINTS, renderMain, renderStage, simulate, simPanel, snapshot, ... }
+   Plain script (v8: configurable wells/lime/CO2, per-RO turbines & outputs, clickable pipes/valves → SWRO_SPEC): window.SWRO_PFD = { STAGES, STAGE_ORDER, POINTS, renderMain, renderStage, simulate, simPanel, snapshot, ... }
    Drawing follows the operator's hand-drawn PFD of Desalination Plant 1:
    11 wells · chlorine · 6 filtrations · raw tank · 2 feed pumps · acid · SMBS · 5 cartridge filters ·
    5 HP pumps · 5 RO trains · product tank · 3 transfer pumps · lime · final chlorine · isolation valves
@@ -45,7 +45,7 @@
                dg: { src: { fa: 'خط خوراک (نقطه ۳)', en: 'Feed line (point 3)' }, unit: { t: 'cart', fa: 'کارتریج', en: 'Cartridge', n: 5, pref: 'cart' }, dst: { fa: 'پمپ‌های فشار قوی', en: 'HP pumps' }, marks: [{ n: 4, at: 'dst' }] } },
     hp:      { fa: 'پمپ‌های فشار قوی (۵ عدد)', en: 'High-pressure pumps (5)', groups: [], keys: [],
                dg: { src: { fa: 'خروجی کارتریج‌ها', en: 'Cartridge outlets' }, unit: { t: 'pump', fa: 'پمپ فشار قوی', en: 'HP pump', n: 5, pref: 'hp' }, dst: { fa: 'ممبران‌های RO', en: 'RO membranes' } } },
-    ro:      { fa: 'ممبران RO (۵ خط) و نقطه ۵', en: 'RO membranes (5 trains) & point 5', groups: ['q_m'], keys: ['rec', 'roFeedP', 'roConcP', 'roPermQ', 'roTemp'], info: [['اندازه منافذ ممبران', 'Membrane pore size', '۰٫۰۰۱ میکرون', '0.001 µm']],
+    ro:      { fa: 'ممبران RO (۵ خط) و نقطه ۵', en: 'RO membranes (5 trains) & point 5', groups: ['q_m', 'q_m1', 'q_m2', 'q_m3', 'q_m4', 'q_m5'], keys: ['rec', 'roFeedP', 'roConcP', 'roPermQ', 'roTemp'], info: [['اندازه منافذ ممبران', 'Membrane pore size', '۰٫۰۰۱ میکرون', '0.001 µm']],
                dg: { src: { fa: 'پمپ‌های فشار قوی', en: 'HP pumps' }, unit: { t: 'ro', fa: 'RO', en: 'RO', n: 5, pref: 'ro' }, dst: { fa: 'مخزن آب تولیدی', en: 'Product tank' }, marks: [{ n: 5, at: 'dst' }] } },
     lime:    { fa: 'بستر سنگ آهک (کف مخزن آب تولیدی)', en: 'Limestone bed (product tank floor)', groups: [], keys: ['oPh', 'oTh'], el: 'lime', note: ['سنگ آهک کف مخزن آب تولیدی است و مصرف روزانه ندارد؛ pH و سختی آب خروجی که اثر آن را نشان می‌دهند در اینجا دیده می‌شوند.', 'The limestone bed is on the product tank floor and has no daily consumption; the output pH and hardness (its effect) are shown here.'],
                dg: { src: { fa: 'خروجی RO (نقطه ۵)', en: 'RO output (point 5)' }, unit: { t: 'tank', fa: 'مخزن آب تولیدی + بستر آهک', en: 'Product tank + limestone bed', n: 1, single: 'prod' }, dst: { fa: 'پمپ‌های ارسال', en: 'Transfer pumps' }, marks: [{ n: 5, at: 'src' }] } },
@@ -76,13 +76,70 @@
     add('prod', 'prodtank', 'مخزن آب تولیدی', 'Product water tank'); add('lime', 'lime', 'بستر سنگ آهک', 'Limestone bed');
     for (let i = 1; i <= 3; i++) add('out' + i, 'outp', 'پمپ ارسال ' + FA(i), 'Transfer pump ' + i);
     add('outchl', 'outchl', 'تزریق کلر نهایی', 'Final chlorine dosing');
+    add('as', 'cart', 'تزریق ضدرسوب (آنتی‌اسکالانت)', 'Antiscalant dosing');
+    for (let i = 1; i <= 5; i++) add('turb' + i, 'ro', 'توربین پلتون ' + FA(i), 'Pelton turbine ' + i);
+    add('limep', 'lime', 'تزریق پودر آهک (رزرو)', 'Lime-powder dosing (reserve)'); add('co2', 'prodtank', 'مخزن CO₂ (رزرو)', 'CO₂ tank (reserve)');
+    add('cip', 'ro', 'سیستم شست‌وشوی شیمیایی (CIP)', 'CIP system'); add('bw', 'filt', 'پمپ پس‌شویی', 'Backwash pump');
+    add('comp1', 'filt', 'کمپرسور هوا ۱', 'Air compressor 1'); add('comp2', 'filt', 'کمپرسور هوا ۲', 'Air compressor 2');
   })();
   const elInfo = (id) => ELEMENTS.find(e => e.id === id) || null;
 
+  /* ---------- plant configuration: which wells / reserve dosings are active ----------
+     stored by the app in settings/alerts.dsPlant = { wells:[bool×11], lime:bool, co2:bool }.  Default: wells 1–7 on, 8–11 reserve, lime & CO2 reserve (off). */
+  function normCfg(c) {
+    c = c || {}; const w = [];
+    for (let i = 0; i < 11; i++) { const raw = Array.isArray(c.wells) ? c.wells[i] : (c.wells && typeof c.wells === 'object' ? c.wells[i + 1] : undefined); w.push(raw == null ? i < 7 : !!raw); }
+    return { wells: w, lime: !!c.lime, co2: !!c.co2 };
+  }
+  const inactiveSet = (cfg) => { const s = new Set(); normCfg(cfg).wells.forEach((on, i) => { if (!on) s.add('well' + (i + 1)); }); return s; };
+
   /* ---------- svg helpers ---------- */
   const T = (x, y, s, o) => { o = o || {}; return `<text x="${x}" y="${y}" text-anchor="${o.a || 'middle'}" font-size="${o.s || 14}" font-weight="${o.w || 700}" fill="${o.c || C.ink}" direction="rtl">${esc(s)}</text>`; };
-  const PL = (pts, kind, arrow) => { const col = { f: C.feed, p: C.prod, c: C.chem }[kind]; return `<polyline points="${pts.map(q => q.join(',')).join(' ')}" fill="none" stroke="${col}" stroke-width="3" stroke-linejoin="round" ${kind === 'c' ? 'stroke-dasharray="7 5"' : 'class="flow"'} ${arrow ? `marker-end="url(#a${kind})"` : ''}/>`; };
-  const DEFS = `<defs>${[['f', C.feed], ['p', C.prod], ['c', C.chem]].map(([k, c]) => `<marker id="a${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${c}"/></marker>`).join('')}</defs>`;
+  const PCOL = { f: C.feed, p: C.prod, c: C.chem, b: '#c2410c', a: '#475569' };
+  /* classify a pipe (kind + geometry in the 1400-wide main PFD) → key of SWRO_SPEC.PIPES */
+  function pipeKey(kind, pts) {
+    const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]), minx = Math.min.apply(null, xs), maxx = Math.max.apply(null, xs), miny = Math.min.apply(null, ys), maxy = Math.max.apply(null, ys);
+    const a = pts[0], z = pts[pts.length - 1];
+    if (kind === 'a') return 'airline';
+    if (kind === 'b') return (pts.length === 3 && a[0] === 1020) ? 'brinehdr' : 'brine';
+    if (kind === 'c') {
+      if (miny >= 940) return 'chem_cip';
+      if (a[0] === 150) return 'chem_chlor'; if (a[0] === 610) return 'chem_acid'; if (a[0] === 780) return 'chem_smbs'; if (a[0] === 950) return 'chem_as';
+      if (a[0] === 1118) return 'chem_outchl'; if (a[0] === 1115 || a[0] === 1272) return 'chem_lime'; return null;
+    }
+    if (kind === 'p') {
+      if (a[0] === 992 && z[0] === 1050 && a[1] === z[1]) return 'perm';
+      if (a[0] === 1050 && z[0] === 1050) return 'permhdr';
+      if (a[0] === 1050 && z[0] === 1150) return 'prodin';
+      if (minx >= 1200 && maxx <= 1360 && miny >= 360 && maxy <= 520) return 'xfer';
+      if (a[0] === 1280 && z[0] === 1280 && z[1] === 112) return 'distline';
+      return null;
+    }
+    if (kind === 'f') {
+      if (maxy >= 1000) return 'bwline';
+      if (pts.length === 2 && a[0] === z[0] && miny >= 722 && maxy <= 764 && a[0] >= 380) return 'wellbr';
+      if (a[1] === 720 && z[1] === 720 && maxx >= 1300) return 'wellhdr';
+      if (a[0] === 420 && a[1] === 720 && z[1] === 215) return 'filtfeed';
+      if (a[0] === 420 && z[0] === 382) return 'filtin';
+      if (a[0] === 150 && z[0] === 70) return 'filtout';
+      if (a[0] === 70 && z[0] === 70) return 'filtcoll';
+      if (a[0] === 470 && z[0] === 520 && z[1] === 600) return 'feedline';
+      if (a[0] === 520 && z[0] === 556) return 'cartin';
+      if (a[0] === 604 && z[0] === 672) return 'cartout';
+      if (a[0] === 708 && z[0] === 780) return 'hpout';
+      if (minx >= 320 && maxx <= 520 && miny >= 70 && maxy <= 140) return 'rawout';
+      return null;
+    }
+    return null;
+  }
+  /* PL(points, kind[, arrow[, noHit]]) — kind: f feed · p product · c chemical · b brine · a air. Classified pipes get a transparent hit-line and data-pipe. */
+  const PL = (pts, kind, arrow, noHit) => {
+    const col = PCOL[kind], st = kind === 'c' ? 'stroke-dasharray="7 5"' : kind === 'a' ? 'stroke-dasharray="3 5"' : kind === 'b' ? '' : 'class="flow"', w = kind === 'b' ? 4.5 : kind === 'a' ? 3.5 : 3;
+    const P = pts.map(q => q.join(',')).join(' '), line = `<polyline points="${P}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" ${st} ${arrow ? `marker-end="url(#a${kind})"` : ''}/>`;
+    const key = noHit ? null : pipeKey(kind, pts);
+    return key ? `<g class="pipe" data-pipe="${key}"><polyline points="${P}" fill="none" stroke="transparent" stroke-width="16" stroke-linejoin="round" pointer-events="stroke"/>${line}</g>` : line;
+  };
+  const DEFS = `<defs>${[['f', C.feed], ['p', C.prod], ['c', C.chem], ['b', '#c2410c'], ['a', '#475569']].map(([k, c]) => `<marker id="a${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${c}"/></marker>`).join('')}</defs>`;
   const HOT = (stage, focus, name, inner, el) => `<g class="hot" data-stage="${stage}" ${focus ? `data-focus="${focus}"` : ''} ${el ? `data-el="${el}"` : ''}><title>${esc(name)}</title>${inner}</g>`;
   const pumpG = (x, y, dir) => `<circle cx="${x}" cy="${y}" r="17" fill="${C.pump}" stroke="${C.pumpS}" stroke-width="2.5"/><polygon points="${dir === 'up' ? `${x},${y - 9} ${x - 9},${y + 8} ${x + 9},${y + 8}` : `${x - 7},${y - 9} ${x - 7},${y + 9} ${x + 10},${y}`}" fill="#fff" stroke="${C.pumpS}" stroke-width="1.5"/>`;
   const circ = (x, y, r, s, fs) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${C.tank}" stroke="${C.tankS}" stroke-width="3"/>` + T(x, y + (fs || 16) / 2.6, s, { s: fs || 16 });
@@ -102,21 +159,25 @@
   const isShut = (off, id) => !!off && off.has(id);
 
   /* =====================================================================
-     MAIN SITE PFD   (viewBox 1400×930)
+     MAIN SITE PFD   (viewBox 1400×1216)
      ctx: { fa, bad:Set, v:{latest}, sim:{on, off:Set} }
      ===================================================================== */
+  const PFD_H = 1216;
   function mainSVG(ctx) {
+    const cfg = normCfg(ctx.cfg);
     const fa = ctx.fa, off = ctx.sim && ctx.sim.off, n = (x) => fa ? FA(x) : String(x), Lb = (a, b) => fa ? a : b, v = ctx.v || {};
     const val = (k, u, d) => { if (v[k] == null || v[k] === '') return ''; const t = Number(v[k]).toLocaleString('en-US', { maximumFractionDigits: d == null ? 0 : d }); return fa ? FA(t).replace(/,/g, '٬') + ' ' + (u === 'm³' ? 'مترمکعب' : u === '%' ? '٪' : u) : t + ' ' + u; };
     const V = (x, y, id, vert) => valve(x, y, id, isShut(off, id), vert, fa);
-    let s = `<svg id="pfdSvg" viewBox="0 0 1400 930" xmlns="${NS}" role="img" aria-label="PFD">${DEFS}<rect width="1400" height="930" fill="#fff"/>`;
+    let s = `<svg id="pfdSvg" viewBox="0 0 1400 ${PFD_H}" xmlns="${NS}" role="img" aria-label="PFD">${DEFS}<rect width="1400" height="${PFD_H}" fill="#fff"/>`;
     s += T(700, 30, Lb('نقشه فرآیندی (PFD) — کارخانه آب‌شیرین‌کن شماره ۱', 'Process flow diagram (PFD) — Desalination Plant 1'), { s: 22 });
     s += T(700, 52, Lb('روی هر بخش یا نقطه نمونه‌برداری (◆) بزنید تا PFD زیرشاخه و پارامترها باز شود', 'Tap any unit or sampling point (◆) to open its sub-PFD and parameters'), { s: 12, c: C.mute, w: 400 });
     /* wells header + filtrations */
     s += PL([[1340, 720], [420, 720]], 'f');
     for (let i = 1; i <= 11; i++) {
       const x = 1340 - (i - 1) * 86;
+      const wOn = cfg.wells[i - 1]; if (!wOn) s += '<g opacity=".38">';
       s += PL([[x, 764], [x, 722]], 'f', true) + V(x, 744, 'well' + i, true) + HOT('wells', 'w' + i, Lb('چاه ', 'Well ') + n(i), circ(x, 790, 25, n(i), 19) + T(x, 842, Lb('چاه ', 'Well ') + n(i), { s: 13 }), 'well' + i);
+      if (!wOn) s += T(x, 862, Lb('غیرفعال', 'Inactive'), { s: 11, c: C.mute, w: 400 }) + '</g>';
     }
     s += PL([[420, 720], [420, 215]], 'f');
     s += HOT('chlor', '', Lb('تزریق کلر اولیه', 'Primary chlorine'), circ(150, 790, 36, Lb('کلر', 'Cl₂'), 19), 'chlor') + PL([[150, 754], [150, 720], [418, 720]], 'c', true) + V(300, 720, 'chlor.v') + T(232, 708, Lb('تزریق کلر', 'Chlorine dosing'), { s: 12, c: C.chem });
@@ -132,7 +193,7 @@
     [[70, 1], [140, 2]].forEach(([y, i]) => { s += V(388, y, 'feed' + i + '.in') + V(453, y, 'feed' + i + '.out') + HOT('feedp', 'p' + i, Lb('پمپ خوراک ', 'Feed pump ') + n(i), pumpG(420, y), 'feed' + i); });
     s += T(420, 182, Lb('پمپ‌های خوراک (۲ عدد)', 'Feed pumps (2)'), { s: 11, c: C.mute, w: 400 });
     /* acid + SMBS */
-    s += HOT('acid', '', Lb('تزریق اسید', 'Acid dosing'), circ(610, 96, 30, Lb('اسید', 'Acid'), 15), 'acid') + PL([[610, 126], [610, 150], [522, 150]], 'c', true) + V(610, 138, 'acid.v', true) + T(566, 142, Lb('تزریق اسید', 'Acid'), { s: 11, c: C.chem });
+    s += HOT('acid', '', Lb('تزریق اسید', 'Acid dosing'), circ(610, 96, 30, Lb('اسید', 'Acid'), 15), 'acid') + PL([[610, 126], [610, 166], [324, 166]], 'c', true) + V(610, 138, 'acid.v', true) + T(694, 128, Lb('اسید ← مخزن آب خام', 'Acid → raw tank'), { s: 11, c: C.chem });
     s += HOT('smbs', '', Lb('تزریق SMBS', 'SMBS dosing'), circ(780, 100, 36, 'SMBS', 17), 'smbs') + PL([[780, 136], [780, 195], [522, 195]], 'c', true) + V(780, 166, 'smbs.v', true) + T(660, 187, Lb('تزریق متابی‌سولفیت (SMBS)', 'SMBS dosing'), { s: 12, c: C.chem });
     s += diamond(520, 172, 2, fa) + diamond(520, 218, 3, fa) + diamond(420, 690, 1, fa);
     /* RO trains */
@@ -160,13 +221,54 @@
     s += HOT('outchl', '', Lb('تزریق کلر نهایی', 'Final chlorine'), circ(1090, 230, 28, Lb('کلر', 'Cl₂'), 15), 'outchl') + PL([[1118, 230], [1278, 230]], 'c', true) + V(1160, 230, 'outchl.v') + T(1215, 222, Lb('تزریق کلر نهایی', 'Final chlorine'), { s: 11, c: C.chem });
     s += diamond(1280, 168, 6, fa);
     s += HOT('dist', '', Lb('ایستگاه توزیع پارس', 'Pars distribution station'), `<rect x="1130" y="66" width="250" height="40" rx="8" fill="#fff" stroke="${C.prod}" stroke-width="2.5"/>` + T(1255, 92, Lb('آب ارسالی به ایستگاه توزیع پارس', 'Water to Pars distribution station'), { s: 14 }));
+
+    /* ===== v8 additions: antiscalant · per-RO Pelton turbines · per-RO outputs · reserve lime/CO2 · CIP · backwash · air ===== */
+    s += HOT('cart', '', Lb('تزریق آنتی‌اسکالانت', 'Antiscalant dosing'), circ(950, 96, 36, Lb('ضدرسوب', 'Antiscl.'), 13), 'as') + PL([[950, 132], [950, 148], [524, 148]], 'c', true) + T(860, 142, Lb('تزریق آنتی‌اسکالانت', 'Antiscalant'), { s: 11, c: C.chem });
+    for (let i = 1; i <= 5; i++) {
+      const y = 240 + (i - 1) * 90, ty = y + 45;
+      s += PL([[960, y + 24], [960, ty - 13]], 'b');
+      s += `<g class="hot" data-stage="ro" data-focus="r${i}" data-el="turb${i}"><title>${Lb('توربین پلتون ', 'Pelton turbine ')}${n(i)}</title><circle cx="960" cy="${ty}" r="13" fill="#fbbf24" stroke="#b45309" stroke-width="2.5"/><path d="M952,${ty} l8,-9 l8,9 l-8,9z" fill="#fff" stroke="#b45309" stroke-width="1.2"/></g>`;
+      s += PL([[973, ty], [1020, ty]], 'b') + T(1000, ty - 6, Lb('پلتون ', 'T') + n(i), { s: 9.5, c: '#7c5a00', w: 600 });
+      /* per-RO permeate sampling / data tag */
+      s += `<g class="hot samp" data-stage="ro" data-focus="pm${i}"><title>${esc(Lb('نمونه‌برداری و مشخصات خروجی RO ', 'Sampling & operating data of RO ') + n(i) + Lb(' (پرمیت)', ' (permeate)'))}</title><polygon points="1035,${y - 11} 1046,${y} 1035,${y + 11} 1024,${y}" fill="#fff2f7" stroke="#d6336c" stroke-width="2"/>${T(1035, y + 4, n(i), { s: 11, c: '#d6336c' })}</g>`;
+    }
+    s += PL([[1020, 285], [1020, 670], [940, 670]], 'b', true);
+    s += T(1006, 232, Lb('آب شور', 'Brine'), { s: 11, c: '#c2410c', a: 'end' });
+    s += `<rect x="800" y="652" width="132" height="38" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2.5"/>` + T(866, 676, Lb('تخلیه به دریا', 'Reject to sea'), { s: 13 });
+    s += T(880, 706, Lb('هر توربین روی محور پمپ فشار قوی همان RO (≈۲۲۰ کیلووات بازیابی)', 'Each turbine on its RO’s HP-pump shaft'), { s: 10, c: C.mute, w: 400 });
+    /* reserve: lime-powder dosing + CO2 tank beside the product tank — switchable in Plant settings */
+    const rsv = (on, cx, el, stage, label, nameFa, nameEn, fill, stk) => HOT(stage, '', Lb(nameFa, nameEn) + ' — ' + (on ? Lb('فعال', 'active') : Lb('رزرو/غیرفعال', 'reserve / inactive')),
+      `<g opacity="${on ? 1 : .5}"><circle cx="${cx}" cy="688" r="22" fill="${on ? fill : '#f5f5f4'}" stroke="${on ? stk : '#78716c'}" stroke-width="2.5" ${on ? '' : 'stroke-dasharray="5 3"'}/>${T(cx, 693, label, { s: 12 })}</g>` +
+      T(cx + 77, 686, Lb(nameFa, nameEn), { s: 11, c: C.chem }) + T(cx + 77, 701, on ? Lb('(فعال)', '(active)') : Lb('(رزرو — غیرفعال)', '(reserve — inactive)'), { s: 10, c: on ? '#15803d' : C.mute, w: 400 }), el);
+    s += rsv(cfg.lime, 1115, 'limep', 'lime', Lb('آهک', 'Lime'), 'تزریق پودر آهک', 'Lime-powder dosing', '#fef9c3', '#a16207') + PL([[1115, 666], [1115, 647]], 'c', cfg.lime);
+    s += rsv(cfg.co2, 1272, 'co2', 'prodtank', 'CO₂', 'مخزن CO₂', 'CO₂ tank', '#e0e7ff', '#4f46e5') + PL([[1272, 666], [1272, 647]], 'c', cfg.co2);
+    /* ===== CIP + backwash + air (band under the plant) ===== */
+    const BY = 960;
+    s += `<rect x="30" y="${BY - 18}" width="1340" height="206" rx="12" fill="#faf5ff" stroke="#d8b4fe" stroke-dasharray="8 6" stroke-width="2"/>` + T(700, BY + 6, Lb('شستشوی شیمیایی (CIP) و پس‌شستشوی فیلترها', 'CIP & filter backwash'), { s: 15, c: '#6d28d9' });
+    s += HOT('ro', '', 'CIP', `<rect x="1180" y="${BY + 30}" width="170" height="130" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="3"/>` + T(1265, BY + 80, Lb('مخزن CIP', 'CIP tank'), { s: 18 }) + T(1265, BY + 102, Lb('۱۲ مترمکعب', '12 m³'), { s: 13, w: 600 }) + T(1265, BY + 122, Lb('گرمکن برقی', 'Electric heater'), { s: 11, w: 400 }), 'cip');
+    s += PL([[1180, BY + 95], [1090, BY + 95]], 'c', true);
+    s += HOT('ro', '', Lb('پمپ‌های CIP', 'CIP pumps'), pumpG(1070, BY + 78, 'right') + pumpG(1070, BY + 118, 'right') + T(1070, BY + 152, Lb('۲ پمپ CIP', 'CIP pump ×2'), { s: 11, w: 600 }), 'cip');
+    s += PL([[1050, BY + 98], [950, BY + 98]], 'c', true) + HOT('ro', '', Lb('فیلتر CIP ۵ میکرون', 'CIP 5 µm filter'), circ(925, BY + 98, 24, 'F', 16) + T(925, BY + 66, Lb('فیلتر ۵µm', '5µm filter'), { s: 11 }), 'cip');
+    s += PL([[900, BY + 98], [780, BY + 98]], 'c', true) + T(740, BY + 130, Lb('به ورودی RO ها (CIP)', 'To RO inlets (CIP)'), { s: 13, c: C.chem });
+    s += HOT('filt', '', Lb('پمپ پس‌شویی', 'Backwash pump'), pumpG(340, BY + 90, 'up') + T(340, BY + 130, Lb('پمپ پس‌شویی', 'Backwash pump'), { s: 11, w: 600 }), 'bw');
+    s += HOT('filt', '', Lb('کمپرسور هوا ۱', 'Air compressor 1'), circ(215, BY + 90, 24, Lb('کمپرسور', 'Comp.'), 11), 'comp1') + HOT('filt', '', Lb('کمپرسور هوا ۲', 'Air compressor 2'), circ(115, BY + 90, 24, Lb('کمپرسور', 'Comp.'), 11), 'comp2') + T(165, BY + 130, Lb('۲ کمپرسور هوا', 'Air compressors ×2'), { s: 11, w: 600 });
+    s += PL([[215, BY + 66], [215, BY + 44], [115, BY + 44]], 'a') + PL([[115, BY + 66], [115, BY + 44], [32, BY + 44], [32, 229]], 'a');
+    for (let k = 1; k <= 6; k++) { const y = 215 + (6 - k) * 80 + 14; s += PL([[32, y], [148, y]], 'a', true); }
+    s += T(78, BY + 38, Lb('هوای فشرده', 'Air'), { s: 10.5, c: '#475569' });
+    s += PL([[340, BY + 72], [340, BY + 30], [70, BY + 30], [70, 650]], 'f', true) + T(205, BY + 22, Lb('آب پس‌شستشو → فیلتراسیون‌ها', 'Backwash water → filters'), { s: 11, c: C.feed });
     /* legend */
+    s += '<g transform="translate(0,255)">';
     const leg = [[Lb('خط آب خام / خوراک', 'Raw / feed line'), 'f'], [Lb('خط آب تولیدی (پرمیت)', 'Product (permeate) line'), 'p'], [Lb('خط تزریق مواد شیمیایی', 'Chemical dosing line'), 'c']];
-    leg.forEach((a, i) => { const x = 1360 - i * 205; s += PL([[x, 905], [x - 34, 905]], a[1], true) + T(x - 42, 909, a[0], { a: fa ? 'start' : 'end', s: 12, w: 400 }); });
+    leg.forEach((a, i) => { const x = 1360 - i * 205; s += PL([[x, 905], [x - 34, 905]], a[1], true, true) + T(x - 42, 909, a[0], { a: fa ? 'start' : 'end', s: 12, w: 400 }); });
     s += `<circle cx="690" cy="905" r="9" fill="${C.pump}" stroke="${C.pumpS}" stroke-width="2"/>` + T(674, 909, Lb('پمپ', 'Pump'), { a: fa ? 'start' : 'end', s: 12, w: 400 });
     s += valve(600, 905, 'legend', false, false, fa).replace('data-valve="legend"', 'data-legend="1"') + T(584, 909, Lb('شیر قطع و وصل', 'Isolation valve'), { a: fa ? 'start' : 'end', s: 12, w: 400 });
     s += `<polygon points="480,893 492,905 480,917 468,905" fill="#fff" stroke="#d6336c" stroke-width="2.4"/>` + T(454, 909, Lb('نقطه نمونه‌برداری', 'Sampling point'), { a: fa ? 'start' : 'end', s: 12, w: 400 });
     s += `<rect x="330" y="896" width="22" height="18" rx="6" fill="${C.tank}" stroke="${C.tankS}" stroke-width="2"/>` + T(320, 909, Lb('مخزن / فیلتر / چاه', 'Tank / filter / well'), { a: fa ? 'start' : 'end', s: 12, w: 400 });
+    s += '</g>';
+    s += `<polyline points="1360,1190 1326,1190" stroke="#c2410c" stroke-width="4.5" fill="none"/>` + T(1318, 1194, Lb('آب شور (کنسانتره)', 'Brine (concentrate)'), { a: fa ? 'start' : 'end', s: 12, w: 400 });
+    s += `<polyline points="1155,1190 1121,1190" stroke="#475569" stroke-width="3.5" stroke-dasharray="3 5" fill="none"/>` + T(1113, 1194, Lb('هوای فشرده', 'Compressed air'), { a: fa ? 'start' : 'end', s: 12, w: 400 });
+    s += `<circle cx="960" cy="1190" r="9" fill="#fbbf24" stroke="#b45309" stroke-width="2"/>` + T(944, 1194, Lb('توربین پلتون', 'Pelton turbine'), { a: fa ? 'start' : 'end', s: 12, w: 400 });
+    s += `<g opacity=".5"><circle cx="760" cy="1190" r="9" fill="#f5f5f4" stroke="#78716c" stroke-width="2" stroke-dasharray="3 2"/></g>` + T(744, 1194, Lb('واحد غیرفعال / رزرو', 'Inactive / reserve unit'), { a: fa ? 'start' : 'end', s: 12, w: 400 });
     s += liveBadges(ctx);
     return s + '</svg>';
   }
@@ -190,6 +292,7 @@
       .pfd-wrap svg{display:block;width:100%;min-width:760px;height:auto}
       .pfd-wrap .hot,.pfd-wrap .valve{cursor:pointer;transition:filter .15s}.pfd-wrap .hot:hover,.pfd-wrap .valve:hover{filter:drop-shadow(0 0 5px #ff7a59) brightness(1.06)}
       .pfd-wrap .flow{stroke-dasharray:8 6;animation:pfdflow 1.2s linear infinite}
+      .pfd-wrap .pipe{cursor:pointer}.pfd-wrap .pipe:hover polyline:last-child{filter:drop-shadow(0 0 4px #ff7a59);stroke-width:5}
       @keyframes pfdflow{to{stroke-dashoffset:-14}}
       .pfd-wrap .hot.bad>circle,.pfd-wrap .hot.bad>rect,.pfd-wrap .hot.bad>polygon{stroke:#d43439!important;stroke-width:5!important}
       .pfd-wrap .hot.off{opacity:.38}.pfd-wrap .hot.off>circle,.pfd-wrap .hot.off>rect{stroke:#d43439!important;stroke-dasharray:6 4}
@@ -206,6 +309,8 @@
     const sim = ctx.sim || { on: false, off: new Set() };
     mount.innerHTML = MAIN_CSS + `<div class="pfd-wrap ${sim.on ? 'simon' : ''}">${mainSVG(ctx)}</div>
     <div class="stage-chips">${STAGE_ORDER.map(id => `<span class="stage-chip ${ctx.bad && ctx.bad.has(id) ? 'bad' : ''}" data-stage="${id}">${ctx.eqStage && ctx.eqStage[id] ? `<i class="dot" style="background:${ctx.eqStage[id] === 'bad' ? '#d43439' : '#f5a524'}" title="${esc(ctx.fa ? 'تجهیز دارای تعمیر باز / بازدید معوق' : 'Equipment with open repair / overdue inspection')}"></i>` : ''}${esc(ctx.fa ? STAGES[id].fa : STAGES[id].en)}</span>`).join('')}</div>`;
+    const SPC = window.SWRO_SPEC;
+    if (SPC) mount.querySelectorAll('.pipe').forEach(g => { const p = SPC.forPipe(g.dataset.pipe); if (p) g.insertAdjacentHTML('afterbegin', '<title>' + esc((ctx.fa ? p.fa : p.en) + (ctx.fa ? ' — برای مشخصات بزنید' : ' — tap for specs')) + '</title>'); });
     mount.querySelectorAll('.hot').forEach(g => {
       if (ctx.bad && ctx.bad.has(g.dataset.stage) && !g.classList.contains('samp')) g.classList.add('bad');
       if (g.dataset.el && elOff(sim.off, g.dataset.el)) g.classList.add('off');
@@ -220,7 +325,9 @@
     });
     mount.onclick = (ev) => {
       const vl = ev.target.closest('[data-valve]');
-      if (vl) { if (sim.on && ctx.toggle) ctx.toggle(vl.dataset.valve); else if (ctx.hint) ctx.hint(); return; }
+      if (vl) { if (sim.on && ctx.toggle) ctx.toggle(vl.dataset.valve); else if (ctx.openValve) ctx.openValve(vl.dataset.valve); else if (ctx.hint) ctx.hint(); return; }
+      const pp = ev.target.closest('.pipe');
+      if (pp && !ev.target.closest('.hot')) { if (!sim.on && ctx.openPipe) ctx.openPipe(pp.dataset.pipe); return; }
       const el = ev.target.closest('.hot[data-el]');
       if (el && sim.on && ctx.toggle) { ctx.toggle(el.dataset.el); return; }
       if (el && ctx.openEl) { ctx.openEl(el.dataset.el, el.dataset.stage, el.dataset.focus || ''); return; }
@@ -234,13 +341,13 @@
      Assumptions (stated to the user): parallel units have equal capacity and no spare; no bypass lines are drawn.
      ===================================================================== */
   const RULE_NAMES = { wells: ['چاه‌ها', 'Wells'], filt: ['فیلتراسیون', 'Filtration'], raw: ['مخزن آب خام', 'Raw water tank'], feed: ['پمپ‌های خوراک', 'Feed pumps'], train: ['خطوط RO (کارتریج + پمپ فشار قوی + RO)', 'RO trains (cartridge + HP pump + RO)'], prod: ['مخزن آب تولیدی', 'Product tank'], out: ['پمپ‌های ارسال', 'Transfer pumps'] };
-  function simulate(off, latest) {
-    off = off || new Set();
+  function simulate(off, latest, cfgIn) {
+    off = off || new Set(); const cfg = normCfg(cfgIn), aw = []; cfg.wells.forEach((on, i) => { if (on) aw.push(i + 1); }); const NW = aw.length;
     const act = (id) => !elOff(off, id), cnt = (pref, n) => { let c = 0; for (let i = 1; i <= n; i++) if (act(pref + i)) c++; return c; };
-    const trainOk = (i) => act('cart' + i) && act('hp' + i) && act('ro' + i);
+    const trainOk = (i) => act('cart' + i) && act('hp' + i) && act('ro' + i) && act('turb' + i);
     let trains = 0; for (let i = 1; i <= 5; i++) if (trainOk(i)) trains++;
-    const n = { wells: cnt('well', 11), filt: cnt('filt', 6), feed: cnt('feed', 2), train: trains, out: cnt('out', 3) };
-    const a = { wells: n.wells / 11, filt: n.filt / 6, raw: act('raw') ? 1 : 0, feed: n.feed / 2, train: trains / 5, prod: act('prod') ? 1 : 0, out: n.out / 3 };
+    const n = { wells: aw.filter(i => act('well' + i)).length, filt: cnt('filt', 6), feed: cnt('feed', 2), train: trains, out: cnt('out', 3) };
+    const a = { wells: NW ? n.wells / NW : 0, filt: n.filt / 6, raw: act('raw') ? 1 : 0, feed: n.feed / 2, train: trains / 5, prod: act('prod') ? 1 : 0, out: n.out / 3 };
     const order = ['wells', 'filt', 'raw', 'feed', 'train', 'prod', 'out'];
     const F = Math.min.apply(null, order.map(k => a[k]));
     const zero = order.filter(k => a[k] === 0), minK = order.reduce((m, k) => a[k] < a[m] ? k : m, 'wells');
@@ -252,7 +359,10 @@
     const pct = (x) => Math.round(x * 100);
     if (F === 0) E('crit', 'تولید کارخانه به صفر می‌رسد؛ مسیر در مرحله «' + zero.map(k => RULE_NAMES[k][0]).join('، ') + '» قطع است (در PFD مسیر کنارگذر رسم نشده).', 'Plant production drops to zero: the path is cut at “' + zero.map(k => RULE_NAMES[k][1]).join(', ') + '” (no bypass is drawn).');
     else if (F < 1) E('warn', 'ظرفیت کل کارخانه ≈ ' + FA(pct(F)) + '٪ (محدودکننده: ' + RULE_NAMES[minK][0] + ').', 'Plant capacity ≈ ' + pct(F) + '% (limiting stage: ' + RULE_NAMES[minK][1] + ').');
-    if (n.wells < 11 && n.wells > 0) E('info', FA(11 - n.wells) + ' چاه خارج از مدار است؛ شوری و ترکیب آب ورودی (نقطه ۱) ممکن است تغییر کند.', (11 - n.wells) + ' well(s) out: inlet salinity / composition (point 1) may shift.');
+    if (n.wells < NW && n.wells > 0) E('info', FA(NW - n.wells) + ' چاه از ' + FA(NW) + ' چاه فعال خارج از مدار است؛ شوری و ترکیب آب ورودی (نقطه ۱) ممکن است تغییر کند.', (NW - n.wells) + ' of ' + NW + ' active wells out: inlet salinity / composition (point 1) may shift.');
+    const turbOut = [1, 2, 3, 4, 5].filter(i => !act('turb' + i)); if (turbOut.length) E('warn', 'توربین پلتون RO ' + turbOut.map(FA).join('، ') + ' خارج از مدار است: بر پایه ارقام سند، توان لازم پمپ فشار قوی (۵۵۹ کیلووات) از توان موتور (۴۵۰ کیلووات) بیشتر است و آن خط RO بدون توربین نمی‌تواند به شرایط طرح برسد؛ در شبیه‌ساز آن خط متوقف فرض شده است.', 'Pelton turbine of RO ' + turbOut.join(', ') + ' is out: per the document the HP pump needs 559 kW but the motor is 450 kW, so that train cannot reach design duty — it is treated as stopped.');
+    if (cfg.lime && !act('limep')) E('info', 'تزریق پودر آهک (فعال) خارج از مدار است: pH و سختی خروجی فقط از بستر سنگ آهک تأمین می‌شود.', 'Lime-powder dosing (active) is out: output pH / hardness comes from the limestone bed only.');
+    if (cfg.co2 && !act('co2')) E('info', 'مخزن CO₂ (فعال) خارج از مدار است: pH پرمیت قبل از آهک اصلاح نمی‌شود.', 'The CO₂ tank (active) is out: permeate pH is not conditioned before the lime step.');
     if (n.filt < 6 && n.filt > 0) { const x = 6 / n.filt; E(n.filt <= 4 ? 'warn' : 'info', 'فقط ' + FA(n.filt) + ' فیلتراسیون در مدار: سرعت عبور آب هر فیلتر ≈ ' + FA(x.toFixed(2)) + ' برابر؛ NTU/TSS نقطه ۲ بالا می‌رود و بار کارتریج‌ها زیاد می‌شود.', 'Only ' + n.filt + ' filtrations online: velocity ≈ ' + x.toFixed(2) + '× — NTU/TSS at point 2 rises and cartridges load up.'); }
     if (n.feed === 1) E('warn', 'فقط یک پمپ خوراک در مدار است؛ دبی/فشار خوراک کم می‌شود (ظرفیت ۵۰٪ فرض شده).', 'Only one feed pump online: feed flow / pressure falls (50% capacity assumed).');
     if (trains < 5 && trains > 0) E('warn', 'فقط ' + FA(trains) + ' خط RO فعال است؛ اگر دبی خوراک ثابت بماند شار هر RO بالا می‌رود — دبی خوراک را متناسب کم کنید.', 'Only ' + trains + ' RO train(s) active: if feed flow stays constant the flux per RO rises — reduce feed flow accordingly.');
@@ -275,7 +385,7 @@
       if (finOff) row(6, 'oCl', 'کلر آزاد ≈ نقطه ۵', 'Free Cl ≈ point 5', L('mCl') == null ? 0 : L('mCl'), 'to');
       if (n.filt <= 4 && n.filt > 0) { row(2, 'fNtu', 'NTU بالا می‌رود', 'NTU rises', null, 'up'); }
     }
-    return { F, a, n, f, eff, rows, trains, zero, blockedPoints: [1, 2, 3, 4, 5, 6].filter(p => f[p] === 0) };
+    return { F, a, n, NW, f, eff, rows, trains, zero, blockedPoints: [1, 2, 3, 4, 5, 6].filter(p => f[p] === 0) };
   }
 
   function simPanel(sim, ctx) {
@@ -293,7 +403,7 @@
     const prodEst = base != null ? `<div class="pcard" style="cursor:default"><div class="pn">${fa ? 'تولید روزانه تقریبی' : 'Approx. daily production'}</div><div class="pv" style="font-family:inherit">${fmt(base * sim.F)} <small>${fa ? 'مترمکعب' : 'm³'}</small></div><div class="pm">${fa ? 'نسبت به آخرین تولید ثبت‌شده: ' : 'vs last recorded: '}${fmt(base)}</div></div>` : '';
     return `<div class="card" style="margin-top:12px"><div class="panel-title"><div><h3>${fa ? 'تحلیل اثر خروج از مدار' : 'Out-of-service impact'}</h3><div class="sub">${fa ? 'تقریبی: واحدهای موازی هم‌ظرفیت و بدون ذخیره فرض شده‌اند؛ مقادیر «≈» از آخرین ثبت همان نقطه مرجع گرفته می‌شوند.' : 'Approximate: parallel units assumed equal-capacity with no spare; “≈” values come from the latest record of the reference point.'}</div></div></div>
       <div class="pgrid" style="margin-bottom:10px"><div class="pcard" style="cursor:default"><div class="pn">${fa ? 'ظرفیت کل کارخانه' : 'Plant capacity'}</div><div class="pv" style="font-family:inherit;color:${sim.F === 0 ? '#d43439' : sim.F < 1 ? '#f5a524' : 'var(--accent-2)'}">${D(Math.round(sim.F * 100))}٪</div></div>${prodEst}
-      <div class="pcard" style="cursor:default"><div class="pn">${fa ? 'در مدار' : 'In service'}</div><div class="pm" style="font-size:12px">${fa ? 'چاه' : 'Wells'} ${D(sim.n.wells)}/۱۱ · ${fa ? 'فیلتراسیون' : 'Filt.'} ${D(sim.n.filt)}/۶ · ${fa ? 'پمپ خوراک' : 'Feed'} ${D(sim.n.feed)}/۲<br>${fa ? 'خط RO' : 'RO trains'} ${D(sim.n.train)}/۵ · ${fa ? 'پمپ ارسال' : 'Transfer'} ${D(sim.n.out)}/۳</div></div></div>
+      <div class="pcard" style="cursor:default"><div class="pn">${fa ? 'در مدار' : 'In service'}</div><div class="pm" style="font-size:12px">${fa ? 'چاه' : 'Wells'} ${D(sim.n.wells)}/${D(sim.NW)} · ${fa ? 'فیلتراسیون' : 'Filt.'} ${D(sim.n.filt)}/۶ · ${fa ? 'پمپ خوراک' : 'Feed'} ${D(sim.n.feed)}/۲<br>${fa ? 'خط RO' : 'RO trains'} ${D(sim.n.train)}/۵ · ${fa ? 'پمپ ارسال' : 'Transfer'} ${D(sim.n.out)}/۳</div></div></div>
       <div class="alert-list">${effHtml}</div>${blocked}
       ${rowsHtml ? `<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>${fa ? 'نقطه' : 'Point'}</th><th>${fa ? 'پارامتر' : 'Parameter'}</th><th>${fa ? 'آخرین مقدار ثبت‌شده' : 'Last recorded'}</th><th>${fa ? 'پیش‌بینی' : 'Expected'}</th><th>${fa ? 'توضیح' : 'Note'}</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>` : ''}</div>`;
   }
@@ -312,7 +422,7 @@
   const BOX = (x, y, w, h, s, fs) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10" fill="#f3f7fb" stroke="${C.feed}" stroke-width="2"/>` + T(x + w / 2, y + h / 2 + 5, s, { s: fs || 14 });
 
   function stageSVG(id, ctx) {
-    const st = STAGES[id], dg = st.dg, fa = ctx.fa, lb = (o) => fa ? o.fa : o.en, focus = ctx.focus || '', off = ctx.off;
+    const st = STAGES[id], dg = st.dg, fa = ctx.fa, lb = (o) => fa ? o.fa : o.en, focus = ctx.focus || '', off = (() => { const o = new Set(ctx.off || []); if (id === 'wells') inactiveSet(ctx.cfg).forEach(x => o.add(x)); return o; })();
     const un = dg.unit, nU = un ? un.n : 1;
     const rh = !un ? 62 : ({ well: 36, tank: 130, ro: 78, cart: 68, vess: 60, pump: 62 }[un.t] || 62);
     const H = Math.max(un ? nU * rh + 100 : 260, 260), cy = H / 2;
@@ -369,14 +479,14 @@
   }
 
   /* static PNG of the site PFD (for the comprehensive report) */
-  function snapshot(fa, v) {
-    const svg = mainSVG({ fa, v: v || {}, sim: { on: false, off: new Set() } }).replace('<svg id="pfdSvg"', '<svg width="2100" height="1395"');
+  function snapshot(fa, v, cfg) {
+    const svg = mainSVG({ fa, v: v || {}, cfg, sim: { on: false, off: new Set() } }).replace('<svg id="pfdSvg"', '<svg width="2100" height="1824"');
     return new Promise((res, rej) => {
       const img = new Image();
-      img.onload = () => { const cv = document.createElement('canvas'); cv.width = 2100; cv.height = 1395; const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, 2100, 1395); g.drawImage(img, 0, 0, 2100, 1395); try { res(cv.toDataURL('image/png')); } catch (e) { rej(e); } };
+      img.onload = () => { const cv = document.createElement('canvas'); cv.width = 2100; cv.height = 1824; const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, 2100, 1824); g.drawImage(img, 0, 0, 2100, 1824); try { res(cv.toDataURL('image/png')); } catch (e) { rej(e); } };
       img.onerror = rej; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
     });
   }
 
-  window.SWRO_PFD = { STAGES, STAGE_ORDER, POINTS, renderMain, renderStage, simulate, simPanel, snapshot, elOff, ELEMENTS, elInfo, BADGE };
+  window.SWRO_PFD = { STAGES, STAGE_ORDER, POINTS, renderMain, renderStage, simulate, simPanel, snapshot, elOff, ELEMENTS, elInfo, BADGE, normCfg, inactiveSet, pipeKey, PFD_H };
 })();

@@ -395,6 +395,7 @@ export function startPlant(spec) {
   const asOfNow = () => UI.back > 0 ? addDays(todayISO(), -UI.back) : null;
   const vAt = (k) => { const l = latestAt(k, asOfNow()); return l ? l.v : null; };
   const simLatest = vAt;
+  const plantCfg = () => SP.normCfg((S.alerts || {}).dsPlant);
   const hcfg = () => (S.alerts || {}).dsHealth || {};
 
   /* ---------- equipment health (open repair = red, overdue inspection = amber) ---------- */
@@ -527,7 +528,7 @@ export function startPlant(spec) {
     const m = document.getElementById('pfdMount'); if (!m) return;
     const asOf = asOfNow(), v = {}; ['tkRaw', 'tkProd', 'rec'].forEach(k => { const l = latestAt(k, asOf); if (l) v[k] = l.v; });
     const sim = UI.sim, eh = eqHealth(asOf), lv = livePoints(), live = {}; for (let n = 1; n <= 6; n++) live[n] = { status: lv[n].status, text: D(lv[n].text), spark: lv[n].spark, tip: lv[n].tip };
-    SP.renderMain(m, { fa: isFa(), bad: badStages(asOf), v, sim, live, eq: eh.el, eqStage: eh.stage, open: (id, f) => openStage(id, f), openEl,
+    SP.renderMain(m, { fa: isFa(), cfg: plantCfg(), openValve: (id) => specModal(window.SWRO_SPEC && SWRO_SPEC.forValve(id)), openPipe: (k) => specModal(window.SWRO_SPEC && SWRO_SPEC.forPipe(k)), bad: badStages(asOf), v, sim, live, eq: eh.el, eqStage: eh.stage, open: (id, f) => openStage(id, f), openEl,
       toggle: (id) => { if (sim.off.has(id)) sim.off.delete(id); else sim.off.add(id); drawMainPfd(); },
       hint: () => toast(L('برای باز/بسته کردن شیرها و خارج‌کردن تجهیز، «حالت شبیه‌سازی» را روشن کنید', 'Turn on simulation mode to open / close valves and take equipment out of service')) });
     drawSim();
@@ -536,14 +537,37 @@ export function startPlant(spec) {
     const bar = document.getElementById('simBar'), pn = document.getElementById('simPanel'); if (!bar) return;
     const sim = UI.sim;
     bar.innerHTML = `<div class="toolbar" style="margin:0 0 10px"><button class="btn ${sim.on ? 'btn-primary' : 'btn-ghost'}" id="simTg">${sim.on ? '⏻ ' + L('حالت شبیه‌سازی روشن است', 'Simulation mode ON') : '⏻ ' + L('شبیه‌سازی خروج از مدار', 'Out-of-service simulation')}</button>
+      ${isAdminR() ? `<button class="btn btn-ghost" id="cfgBtn">⚙ ${L('تنظیمات کارخانه (چاه‌ها، آهک، CO₂)', 'Plant settings (wells, lime, CO₂)')}</button>` : ''}
       ${sim.off.size ? `<button class="btn btn-ghost" id="simRs">↺ ${L('همه را در مدار بگذار', 'Put everything back in service')}</button>` : ''}
       <span style="font-size:12px;color:var(--text-muted)">${sim.on ? L('روی شیر (دو مثلث سبز/قرمز) یا هر تجهیز بزنید تا از مدار خارج/وارد شود. فقط شبیه‌سازی است و روی کارخانه یا داده‌ها اثری ندارد.', 'Tap a valve (green / red bow-tie) or any unit to take it out / put it in. Simulation only — nothing is sent to the plant or saved.') : L('شیرهای قطع و وصل روی PFD رسم شده‌اند؛ برای دیدن اثر بستن شیر یا خروج تجهیز بر پارامترهای بعدی، این حالت را روشن کنید.', 'Isolation valves are drawn on the PFD; switch this mode on to see how closing a valve or removing a unit affects downstream parameters.')}</span></div>`;
+    const cb = document.getElementById('cfgBtn'); if (cb) cb.onclick = plantSettings;
     document.getElementById('simTg').onclick = () => { sim.on = !sim.on; drawMainPfd(); };
     const rs = document.getElementById('simRs'); if (rs) rs.onclick = () => { sim.off.clear(); drawMainPfd(); };
     if (sim.on || sim.off.size) {
-      const res = SP.simulate(sim.off, simLatest);
+      const res = SP.simulate(sim.off, simLatest, plantCfg());
       pn.innerHTML = SP.simPanel(res, { fa: isFa(), name: (k) => PBY[k] ? lab(PBY[k]) : k, valOf: simLatest, prodBase: simLatest('prod') });
     } else pn.innerHTML = '';
+  }
+  /* ---------- specification modal (equipment / valve / pipe) from the contractor catalog ---------- */
+  const specRows = (rows) => `<table style="width:100%;border-collapse:collapse;font-size:13px">${rows.map(r => `<tr><td style="padding:6px 8px;border-bottom:1px solid var(--border);color:var(--text-muted);width:38%;vertical-align:top">${esc(isFa() ? r[0] : r[1])}</td><td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600;direction:ltr;text-align:${isFa() ? 'right' : 'left'};unicode-bidi:plaintext">${esc(r[2])}</td></tr>`).join('')}</table>`;
+  function specModal(sp, extraHtml) {
+    if (!sp) { toast(L('مشخصاتی برای این بخش ثبت نشده است', 'No specification recorded for this part')); return; }
+    const html = (extraHtml || '') + specRows(sp.rows) + (sp.note ? `<div class="notice" style="margin:10px 0 0">ℹ️ <div>${esc(isFa() ? sp.note[0] : sp.note[1])}</div></div>` : '') +
+      `<div style="font-size:11px;color:var(--text-dim);margin-top:8px">${L('منبع: پیوست ۱ پیمانکار — ', 'Source: contractor Appendix 1 — ')}${esc(sp.src || '')}${L(' · هر مقدار «در سند ذکر نشده» یعنی پیمانکار آن را ننوشته است.', ' · “Not stated in the document” = the contractor did not give it.')}</div>`;
+    modal(isFa() ? sp.fa : sp.en, html, null);
+  }
+  function plantSettings() {
+    if (!isAdminR()) return; const c = plantCfg();
+    const chk = (id, label, on) => `<label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:14px;cursor:pointer"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}> ${label}</label>`;
+    const html = `<div class="notice" style="margin:0 0 10px">ℹ️ <div>${L('واحدهای غیرفعال روی PFD کم‌رنگ می‌شوند و در شبیه‌ساز حساب نمی‌شوند. هر زمان خواستید همین‌جا فعالشان کنید.', 'Inactive units are greyed on the PFD and ignored by the simulator. Activate them here whenever needed.')}</div></div>
+      <b>${L('چاه‌ها', 'Wells')}</b><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:2px 10px">${c.wells.map((on, i) => chk('pc_w' + (i + 1), L('چاه ', 'Well ') + D(i + 1), on)).join('')}</div>
+      <b style="display:block;margin-top:10px">${L('تزریق‌های رزرو کنار مخزن آب تولیدی', 'Reserve dosing beside the product tank')}</b>${chk('pc_lime', L('تزریق پودر آهک', 'Lime-powder dosing'), c.lime)}${chk('pc_co2', L('مخزن CO₂', 'CO₂ tank'), c.co2)}`;
+    modal(L('تنظیمات کارخانه', 'Plant settings'), html, async (m) => {
+      const out = { wells: c.wells.map((_, i) => !!m.querySelector('#pc_w' + (i + 1)).checked), lime: !!m.querySelector('#pc_lime').checked, co2: !!m.querySelector('#pc_co2').checked };
+      await quick(setDoc(doc(db, 'settings', 'alerts'), { dsPlant: out, updatedAt: new Date().toISOString() }, { merge: true }));
+      S.alerts = Object.assign({}, S.alerts, { dsPlant: out });
+      logAct(L('تنظیمات کارخانه', 'Plant settings'), out.wells.filter(Boolean).length + ' wells'); toast(L('ذخیره شد', 'Saved')); renderCurrent();
+    });
   }
   /* ---------- click on a unit of the PFD: status + quick actions ---------- */
   function openEl(elId, stage, focus) {
@@ -553,12 +577,13 @@ export function startPlant(spec) {
       const cms = S.cm.filter(x => x.equipmentId === e.id && cmOpenAt(x, asOf)), pms = S.pm.filter(p => p.equipmentId === e.id).map(p => ({ p, s: pmStat(p) })).filter(x => x.s.k !== 'ok');
       return `<div class="alert-item" style="align-items:flex-start;flex-wrap:wrap"><span class="tag tag-blue">${esc(catLab(e.category))}</span><b>${esc(e.name)}</b>${cms.map(x => `<span class="tag tag-amber">${L('تعمیر باز: ', 'Open repair: ')}${esc((x.issue || '').slice(0, 40))}</span>`).join('')}${pms.map(({ p, s }) => `<span class="tag ${s.k === 'overdue' ? 'tag-red' : 'tag-amber'}">${s.k === 'overdue' ? L('بازدید معوق: ', 'Overdue: ') : L('نزدیک موعد: ', 'Due soon: ')}${esc(p.title)}</span>`).join('')}${!cms.length && !pms.length ? `<span class="tag tag-green">${L('بدون مورد باز', 'nothing open')}</span>` : ''}</div>`;
     };
-    const html = `<div style="font-size:13px;color:var(--text-muted);margin-bottom:8px">${esc(L('مرحله: ', 'Stage: ') + (isFa() ? SP.STAGES[info.stage].fa : SP.STAGES[info.stage].en))}</div>
+    const spc = window.SWRO_SPEC && SWRO_SPEC.forElement(elId), cfgp = plantCfg(), wm = /^well(\d+)$/.exec(elId), inact = (wm && !cfgp.wells[+wm[1] - 1]) || (elId === 'limep' && !cfgp.lime) || (elId === 'co2' && !cfgp.co2);
+    const html = (inact ? `<div class="notice" style="margin:0 0 8px">⏸ <div>${L('این واحد فعلاً غیرفعال/رزرو است.', 'This unit is currently inactive / reserve.')}${adm ? L(' از «تنظیمات کارخانه» فعالش کنید.', ' Activate it in Plant settings.') : ''}</div></div>` : '') + `<div style="font-size:13px;color:var(--text-muted);margin-bottom:8px">${esc(L('مرحله: ', 'Stage: ') + (isFa() ? SP.STAGES[info.stage].fa : SP.STAGES[info.stage].en))}</div>
       ${eqs.length ? `<div class="alert-list">${eqs.map(eqLine).join('')}</div>` : `<div class="notice" style="margin:0">ℹ️ <div>${L('هنوز تجهیزی به این واحد وصل نشده است. در صفحه «تجهیزات» گزینه «واحد روی PFD» را انتخاب کنید تا وضعیت سلامت آن روی PFD دیده شود.', 'No equipment is linked to this unit yet. Pick “PFD unit” in the equipment form so its health shows on the PFD.')}</div></div>`}
       ${eqs.length > 1 ? `<div style="margin-top:10px">${fSel('o_eq', L('تجهیز مورد نظر', 'Equipment'), eqs.map(e => ({ v: e.id, l: e.name })), eqs[0].id)}</div>` : ''}
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px"><button class="btn btn-primary" id="oStage">${L('باز کردن مرحله و پارامترها', 'Open stage & parameters')}</button>
       ${adm ? (eqs.length ? `<button class="btn btn-ghost" id="oCm">🔧 ${L('ثبت خرابی / تعمیر', 'Log failure / repair')}</button><button class="btn btn-ghost" id="oWo">📋 ${L('صدور دستورکار', 'New work order')}</button>` : `<button class="btn btn-ghost" id="oAdd">＋ ${L('افزودن تجهیز برای این واحد', 'Add equipment for this unit')}</button>`) : `<span style="font-size:12px;color:var(--text-dim);align-self:center">${L('ثبت خرابی و دستورکار فقط برای مدیر فعال است.', 'Failures and work orders can be created by the administrator only.')}</span>`}</div>`;
-    modal(isFa() ? info.fa : info.en, html, null);
+    modal(isFa() ? info.fa : info.en, html + (spc ? `<div style="margin-top:14px;font-weight:700;font-size:13px">${L('مشخصات فنی (سند پیمانکار)', 'Technical data (contractor document)')}</div>` + specRows(spc.rows) + (spc.note ? `<div class="notice" style="margin:10px 0 0">ℹ️ <div>${esc(isFa() ? spc.note[0] : spc.note[1])}</div></div>` : '') + `<div style="font-size:11px;color:var(--text-dim);margin-top:6px">${L('منبع: پیوست ۱ — ', 'Source: Appendix 1 — ')}${esc(spc.src || '')}</div>` : ''), null);
     const m = document.querySelector('.modal'), pick = () => (m.querySelector('#o_eq') ? m.querySelector('#o_eq').value : (eqs[0] && eqs[0].id));
     m.querySelector('#oStage').onclick = () => { document.getElementById('overlay').classList.remove('active'); openStage(stage, focus); };
     const bc = m.querySelector('#oCm'); if (bc) bc.onclick = () => cmForm(null, { equipmentId: pick(), issue: (isFa() ? info.fa : info.en) + ': ' });
@@ -665,7 +690,7 @@ export function startPlant(spec) {
       ${extra.length ? `<div class="card"><div class="panel-title"><h3>${L('پارامترهای مرتبط', 'Related parameters')}</h3></div><div class="pgrid">${extra.map(card).join('')}</div></div>` : ''}
       ${keys.length ? `<div class="chart-card"><div class="ct" id="stCt"></div><div class="chart-box" style="height:250px"><canvas id="stc"></canvas></div></div>` : `<div class="card"><div class="empty"><h4>${L('برای این مرحله پارامتر روزانه‌ای تعریف نشده است', 'No daily parameter is defined for this stage')}</h4></div></div>`}
       <div class="card"><div class="panel-title"><h3>${L('تجهیزات این مرحله', 'Equipment of this stage')}</h3></div>${eqs.length ? `<div class="alert-list">${eqs.map(e => { const o = S.cm.filter(x => x.equipmentId === e.id && x.status === 'open').length; return `<div class="alert-item"><span class="tag tag-blue">${esc(catLab(e.category))}</span><b>${esc(e.name)}</b><span style="color:var(--text-muted)">${esc(e.location || '')}</span>${o ? `<span class="tag tag-amber" style="margin-inline-start:auto">${L('تعمیر باز: ', 'Open repairs: ')}${D(o)}</span>` : ''}</div>`; }).join('')}</div>` : `<div class="empty" style="padding:14px"><h4>${L('تجهیزی به این مرحله وصل نشده', 'No equipment linked to this stage')}</h4><div style="font-size:12px;color:var(--text-muted)">${L('در صفحه «تجهیزات»، هنگام افزودن/ویرایش تجهیز، گزینه «مرحله در PFD» را انتخاب کنید.', 'In “Equipment”, pick “PFD stage” when adding / editing equipment.')}</div></div>`}</div>`;
-    SP.renderStage(document.getElementById('stDiag'), id, { fa, focus: UI.stageFocus, off: UI.sim.off });
+    SP.renderStage(document.getElementById('stDiag'), id, { fa, focus: UI.stageFocus, off: UI.sim.off, cfg: plantCfg() });
     document.getElementById('stBack').onclick = () => go('dashboard');
     const be = document.getElementById('stEntry'); if (be) be.onclick = () => stageEntry(id);
     const bl = document.getElementById('stLim'); if (bl) bl.onclick = () => stageLimits(id);
@@ -801,7 +826,7 @@ export function startPlant(spec) {
     const dd = c.querySelector('#qD'); if (dd) dd.onchange = (e) => { q.jd = +e.target.value; rr(); };
     RK.bindExport(document.getElementById('qExp'), async () => {
       const rg2 = qRange(), dd2 = qData(rg2); let img = null;
-      try { const v = {}; ['tkRaw', 'tkProd', 'rec'].forEach(k => { const l = latestOf(k); if (l) v[k] = l.v; }); img = await SP.snapshot(isFa(), v); } catch (e) { console.warn('pfd snapshot', e); }
+      try { const v = {}; ['tkRaw', 'tkProd', 'rec'].forEach(k => { const l = latestOf(k); if (l) v[k] = l.v; }); img = await SP.snapshot(isFa(), v, plantCfg()); } catch (e) { console.warn('pfd snapshot', e); }
       const secs = [];
       if (img) secs.push({ title: L('نقشه فرآیندی (PFD) و نقاط نمونه‌برداری ◆۱ تا ◆۶', 'Process flow diagram and sampling points 1–6'), chart: img });
       secs.push({ title: L('محل نقاط نمونه‌برداری', 'Sampling point locations'), table: { head: [L('نقطه', 'Point'), L('محل', 'Location')], rows: QPOINTS.map(pt => [D(pt), SP.POINTS[pt][isFa() ? 'fa' : 'en']]) } });

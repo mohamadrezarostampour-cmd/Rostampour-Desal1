@@ -18,6 +18,20 @@ const qgroup = (id, fa, en, pre, list, notes, derived) => ({
   charts: list.map(k => { const d = QDEF[k]; return { title: { fa: d[0], en: d[1] }, series: [pre + k[0].toUpperCase() + k.slice(1)], zero: !(k === 'ph' || k === 'orp') }; })
     .concat(derived ? [{ title: { fa: derived[0].fa, en: derived[0].en }, series: [derived[0].key], zero: false }] : [])
 });
+
+/* per-RO outlet group: permeate sampling (same parameters as point 5) + that train's operating values */
+const roAvg = (suffix, label_fa, label_en, unit, dec) => ({ key: 'avg' + suffix, fa: 'میانگین RO ها — ' + label_fa, en: 'RO average — ' + label_en, unit, dec,
+  fn: b => { const v = [1, 2, 3, 4, 5].map(i => b['m' + i + suffix]).filter(x => x != null && isFinite(x)); return v.length ? v.reduce((a, c) => a + c, 0) / v.length : null; } });
+const roGroup = (i) => {
+  const g = qgroup('m' + i, 'خروجی RO ' + i + ' — نمونه‌برداری پرمیت و مشخصات عملکرد', 'RO ' + i + ' outlet — permeate sampling & operating data', 'm' + i, ['ph', 'ec', 'orp', 'tds', 'th', 'ntu', 'cl'], { ph: 'پرمیت همین خط RO', th: 'سختی بسیار پایین' });
+  g.params.push(
+    P('m' + i + 'FeedP', 'فشار خوراک RO ' + i, 'RO ' + i + ' feed pressure', 'bar', 'avg', { dec: 1, min: 0 }),
+    P('m' + i + 'ConcP', 'فشار کنسانتره RO ' + i, 'RO ' + i + ' concentrate pressure', 'bar', 'avg', { dec: 1, min: 0 }),
+    P('m' + i + 'PermQ', 'دبی پرمیت RO ' + i, 'RO ' + i + ' permeate flow', 'm³/h', 'avg', { dec: 1, min: 0 }),
+    P('m' + i + 'Rec', 'ریکاوری RO ' + i, 'RO ' + i + ' recovery', '%', 'avg', { dec: 1, min: 0, max: 100 }));
+  g.charts = g.charts.concat([{ title: { fa: 'فشار خوراک RO ' + i, en: 'RO ' + i + ' feed pressure' }, series: ['m' + i + 'FeedP'], zero: false }, { title: { fa: 'ریکاوری RO ' + i, en: 'RO ' + i + ' recovery' }, series: ['m' + i + 'Rec'], zero: false }]);
+  return g;
+};
 window.PLANT_SPECS = {};
 window.PLANT_SPECS.desal = {
   id: 'desal', prefix: 'ds_', color: '#1565c0', workOrders: true, clientReport: true,
@@ -59,7 +73,9 @@ window.PLANT_SPECS.desal = {
       ph: 'تنظیم‌شده جهت جلوگیری از رسوب', orp: 'پس از تزریق SMBS' }),
     qgroup('m', 'نقطه ۵ — بعد از RO (پرمیت)، قبل از آهک و کلر', 'Point 5 — After RO (permeate), before lime & chlorine', 'm', ['ph', 'ec', 'orp', 'tds', 'th', 'ntu', 'cl'], {
       ph: 'کمی اسیدی به‌دلیل حذف بی‌کربنات', th: 'سختی بسیار پایین' },
-      [{ key: 'rej', fa: 'درصد حذف نمک (TDS: نقطه ۴ ← نقطه ۵)', en: 'TDS rejection (point 4 → point 5)', unit: '%', dec: 2, fn: b => (b.cTds > 0 && b.mTds != null) ? (b.cTds - b.mTds) / b.cTds * 100 : null }]),
+      [{ key: 'rej', fa: 'درصد حذف نمک (TDS: نقطه ۴ ← نقطه ۵)', en: 'TDS rejection (point 4 → point 5)', unit: '%', dec: 2, fn: b => (b.cTds > 0 && b.mTds != null) ? (b.cTds - b.mTds) / b.cTds * 100 : null },
+        roAvg('Ec', 'EC', 'EC', 'µS/cm', 0), roAvg('Tds', 'TDS', 'TDS', 'ppm', 0), roAvg('Ph', 'pH', 'pH', '', 2), roAvg('Rec', 'ریکاوری', 'recovery', '%', 1)]),
+    roGroup(1), roGroup(2), roGroup(3), roGroup(4), roGroup(5),
     qgroup('o', 'نقطه ۶ — بعد از کلر نهایی و بستر آهک (خروجی کارخانه)', 'Point 6 — After chlorine & lime dosing (plant output)', 'o', ['ph', 'ec', 'tds', 'th', 'ntu', 'cl'], {
       ph: 'تنظیم‌شده با آهک', th: 'بازیابی سختی جهت تعادل آب', cl: 'تزریق جهت ضدعفونی' }),
     /* ---- عملکرد کارتریج و RO — اختیاری، روزی یک‌بار، بدون حد پیش‌فرض (ورودی تحلیل «سلامت RO و کارتریج») ---- */
