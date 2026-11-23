@@ -96,7 +96,7 @@ export function startPlant(spec) {
   const roleNow = () => (window.Role ? window.Role.forUser(auth.currentUser) : null);
   const isAdminR = () => roleNow() === 'admin';
   const canDailyR = () => { const r = roleNow(); return r === 'admin' || r === 'operator'; };
-  const allowedView = (v) => { const r = roleNow(); if (r === 'admin') return true; if (r === 'operator') return ['dashboard', 'stage', 'health', 'entry', 'client', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); if (r === 'viewer') return ['dashboard', 'stage', 'health', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); return false; };
+  const allowedView = (v) => { const r = roleNow(); if (r === 'admin') return true; if (r === 'operator') return ['dashboard', 'stage', 'health', 'entry', 'quick', 'client', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); if (r === 'viewer') return ['dashboard', 'stage', 'health', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); return false; };
   const guard = (n, kind) => {
     const r = roleNow();
     if (r === 'admin') return;
@@ -216,6 +216,8 @@ export function startPlant(spec) {
   const NAV = [
     ['dashboard', 'dash', ['داشبورد', 'Dashboard']],
     ['entry', 'entry', ['ثبت و ویرایش اطلاعات روزانه', 'Daily data entry']],
+    ['quick', 'entry', ['ورود یکجای پارامترها', 'All-in-one parameter entry']],
+    ['rcenter', 'doc', ['مرکز گزارش‌ها', 'Report centre']],
     ['reports', 'chart', ['گزارش‌ها و آمار', 'Reports & statistics']],
     ['qreport', 'doc', ['گزارش جامع ۶ نقطه', 'Six-point full report']],
     ['health', 'chart', ['سلامت RO و کارتریج', 'RO & cartridge health']],
@@ -239,7 +241,7 @@ export function startPlant(spec) {
       <aside class="sidebar" id="sidebar">
         <div class="brand"><div class="brand-logo wide"><img src="banner-logo.png" alt="Rostampour Engineering Co."></div>
           <div class="brand-name">${esc(lab(spec.title))}<small>${esc(lab(spec.subtitle))}</small></div></div>
-        <nav class="nav">${NAV.filter(([id]) => allowedView(id)).map(([id, ic, t]) => `<div class="nav-item ${S.view === id ? 'active' : ''}" data-view="${id}">${svg(ic)}<span>${esc(L(t[0], t[1]))}</span><span class="nav-count" id="cnt_${id}" style="display:none"></span></div>`).join('')}</nav>
+        <nav class="nav">${NAV.filter(([id]) => allowedView(id) && !(isAdminR() && ['reports', 'qreport', 'client'].includes(id))).map(([id, ic, t]) => `<div class="nav-item ${S.view === id ? 'active' : ''}" data-view="${id}">${svg(ic)}<span>${esc(L(t[0], t[1]))}</span><span class="nav-count" id="cnt_${id}" style="display:none"></span></div>`).join('')}</nav>
         <div class="sidebar-foot"><span class="dot-live" id="stDot"></span><span id="stTxt"></span></div>
       </aside>
       <div class="scrim" id="scrim"></div>
@@ -257,7 +259,7 @@ export function startPlant(spec) {
     setStatus();
   }
   function closeSide() { document.getElementById('sidebar').classList.remove('open'); document.getElementById('scrim').classList.remove('show'); }
-  function go(v) { if (!allowedView(v)) { v = 'dashboard'; } S.view = v; closeSide(); root.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === (v === 'stage' ? 'dashboard' : v))); renderCurrent(); try { document.getElementById('content').scrollTop = 0; window.scrollTo(0, 0); } catch (e) { } }
+  function go(v) { if (!allowedView(v)) { v = 'dashboard'; } S.view = v; closeSide(); root.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === (v === 'stage' ? 'dashboard' : (isAdminR() && ['reports', 'qreport', 'client'].includes(v)) ? 'rcenter' : v))); renderCurrent(); try { document.getElementById('content').scrollTop = 0; window.scrollTo(0, 0); } catch (e) { } }
   function setTitle(t, s) { document.getElementById('pgTitle').textContent = t; document.getElementById('pgSub').textContent = s || ''; }
   function destroyCharts() { Object.values(UI.charts).forEach(c => { try { c.destroy(); } catch (e) { } }); UI.charts = {}; }
   function lockUI(c) {   // remove management controls for non-admin users
@@ -273,9 +275,10 @@ export function startPlant(spec) {
   function renderCurrent() {
     if (!allowedView(S.view)) S.view = 'dashboard';
     destroyCharts();
-    const f = { dashboard: vDash, stage: vStage, health: vHealth, qreport: vQReport, limits: vLimits, entry: vEntry, client: vClient, reports: vReports, equipment: vEquip, pm: vPm, cm: vCm, wo: vWo, msearch: vMs, passport: vPassport, log: vLog }[S.view];
+    const f = { dashboard: vDash, stage: vStage, health: vHealth, qreport: vQReport, limits: vLimits, entry: vEntry, quick: vQuick, rcenter: vRCenter, client: vClient, reports: vReports, equipment: vEquip, pm: vPm, cm: vCm, wo: vWo, msearch: vMs, passport: vPassport, log: vLog }[S.view];
     if (!f) return;
     f(document.getElementById('content'));
+    if (isAdminR() && ['reports', 'qreport', 'client'].includes(S.view)) { document.getElementById('content').insertAdjacentHTML('afterbegin', `<div style="margin-bottom:10px"><button class="btn btn-sm btn-ghost" id="rcBack">${isFa() ? '→' : '←'} ${L('بازگشت به مرکز گزارش‌ها', 'Back to report centre')}</button></div>`); document.getElementById('rcBack').onclick = () => go('rcenter'); }
     if (S.view !== 'client') document.getElementById('content').dataset.view = S.view;
     lockUI(document.getElementById('content'));
     [['equipment', S.equipment.length], ['pm', S.pm.length], ['cm', S.cm.filter(c => c.status === 'open').length], ['wo', S.wo.filter(w => w.status !== 'done' && w.status !== 'cancelled').length]].forEach(([id, n]) => {
@@ -824,6 +827,18 @@ export function startPlant(spec) {
     return { recs, pointTables, mHead, mRows, kp, outTotal: Object.keys(PBY).reduce((s2, k) => s2 + (limOf(k).min != null || limOf(k).max != null ? out(k) : 0), 0) };
   }
   const qHead = () => [L('پارامتر', 'Parameter'), L('واحد', 'Unit'), L('حد پایین', 'Min limit'), L('حد بالا', 'Max limit'), L('آخرین', 'Last'), L('میانگین', 'Average'), L('کمینه', 'Min'), L('بیشینه', 'Max'), L('تعداد ثبت', 'Records'), L('خارج از حد', 'Out of limit')];
+  async function qBuildRep() {
+      const rg2 = qRange(), dd2 = qData(rg2); let img = null;
+      try { const v = {}; ['tkRaw', 'tkProd', 'rec'].forEach(k => { const l = latestOf(k); if (l) v[k] = l.v; }); img = await SP.snapshot(isFa(), v, plantCfg()); } catch (e) { console.warn('pfd snapshot', e); }
+      const secs = [];
+      if (img) secs.push({ title: L('نقشه فرآیندی (PFD) و نقاط نمونه‌برداری ◆۱ تا ◆۶', 'Process flow diagram and sampling points 1–6'), chart: img });
+      secs.push({ title: L('محل نقاط نمونه‌برداری', 'Sampling point locations'), table: { head: [L('نقطه', 'Point'), L('محل', 'Location')], rows: QPOINTS.map(pt => [D(pt), SP.POINTS[pt][isFa() ? 'fa' : 'en']]) } });
+      secs.push({ title: L('خلاصه تولید، تراز مخازن و مصرف مواد شیمیایی', 'Production, tank levels & chemicals summary'), kpis: dd2.kp });
+      secs.push({ title: L('مقایسه میانگین پارامترها در ۶ نقطه', 'Average of each parameter across the six points'), table: { head: dd2.mHead, rows: dd2.mRows } });
+      dd2.pointTables.forEach(t => secs.push({ title: t.title, table: { head: qHead(), rows: t.rows } }));
+      return { title: lab(spec.title) + ' — ' + L('گزارش جامع ۶ نقطه نمونه‌برداری', 'six-point full report'), subtitle: rg2.label,
+        meta: [[L('بازه گزارش', 'Period'), rg2.label], [L('روزهای دارای ثبت', 'Days with data'), D(dd2.recs.length)], [L('مقادیر خارج از حد', 'Out-of-limit values'), D(dd2.outTotal)]], sections: secs };
+  }
   function vQReport(c) {
     setTitle(L('گزارش جامع ۶ نقطه نمونه‌برداری', 'Six-point full report'), L('همه پارامترهای ۶ مرحله در یک گزارش برای بایگانی و ارائه', 'All parameters of the six points in one report for archive & presentation'));
     const q = UI.qr = UI.qr || { mode: 'month', jy: curJY(), jm: isoToJ(todayISO()).month, jd: isoToJ(todayISO()).day };
@@ -843,18 +858,183 @@ export function startPlant(spec) {
     c.querySelector('#qY').onchange = (e) => { q.jy = +e.target.value; rr(); };
     const m = c.querySelector('#qM'); if (m) m.onchange = (e) => { q.jm = +e.target.value; rr(); };
     const dd = c.querySelector('#qD'); if (dd) dd.onchange = (e) => { q.jd = +e.target.value; rr(); };
-    RK.bindExport(document.getElementById('qExp'), async () => {
-      const rg2 = qRange(), dd2 = qData(rg2); let img = null;
-      try { const v = {}; ['tkRaw', 'tkProd', 'rec'].forEach(k => { const l = latestOf(k); if (l) v[k] = l.v; }); img = await SP.snapshot(isFa(), v, plantCfg()); } catch (e) { console.warn('pfd snapshot', e); }
-      const secs = [];
-      if (img) secs.push({ title: L('نقشه فرآیندی (PFD) و نقاط نمونه‌برداری ◆۱ تا ◆۶', 'Process flow diagram and sampling points 1–6'), chart: img });
-      secs.push({ title: L('محل نقاط نمونه‌برداری', 'Sampling point locations'), table: { head: [L('نقطه', 'Point'), L('محل', 'Location')], rows: QPOINTS.map(pt => [D(pt), SP.POINTS[pt][isFa() ? 'fa' : 'en']]) } });
-      secs.push({ title: L('خلاصه تولید، تراز مخازن و مصرف مواد شیمیایی', 'Production, tank levels & chemicals summary'), kpis: dd2.kp });
-      secs.push({ title: L('مقایسه میانگین پارامترها در ۶ نقطه', 'Average of each parameter across the six points'), table: { head: dd2.mHead, rows: dd2.mRows } });
-      dd2.pointTables.forEach(t => secs.push({ title: t.title, table: { head: qHead(), rows: t.rows } }));
-      return { title: lab(spec.title) + ' — ' + L('گزارش جامع ۶ نقطه نمونه‌برداری', 'six-point full report'), subtitle: rg2.label,
-        meta: [[L('بازه گزارش', 'Period'), rg2.label], [L('روزهای دارای ثبت', 'Days with data'), D(dd2.recs.length)], [L('مقادیر خارج از حد', 'Out-of-limit values'), D(dd2.outTotal)]], sections: secs };
-    }, () => spec.id + '-six-point-' + qRange().from, toast);
+    RK.bindExport(document.getElementById('qExp'), qBuildRep, () => spec.id + '-six-point-' + qRange().from, toast);
+  }
+
+
+  /* =====================================================================
+     ALL-IN-ONE PARAMETER ENTRY  (ورود یکجای پارامترها)
+     one form for every parameter of the plant; on save the program writes each value to the section that reads it:
+     daily record (sampling points, chemicals, production, RO health, per-RO …) and the client delivery record.
+     ===================================================================== */
+  const clMapped = () => clParams().filter(p => p.on !== false && p.src && PBY[p.src]);
+  const clOnly = () => clParams().filter(p => p.on !== false && !(p.src && PBY[p.src]));
+  function qkDraft(iso) {
+    const r = S.daily.find(x => (x.date || x.id) === iso), cr = clRec(iso) || {}, v = {}, cv = {};
+    ALLP.forEach(p => { const x = r && r.values ? r.values[p.key] : null; v[p.key] = x == null ? '' : String(x); });
+    clOnly().forEach(p => { const x = (cr.v || {})[p.id]; cv[p.id] = x == null ? '' : String(x); });
+    return { date: iso, v, cv, reason: cr.outageReason || '', rnote: cr.outageNote || '', dirty: false };
+  }
+  function vQuick(c) {
+    setTitle(L('ورود یکجای پارامترها', 'All-in-one parameter entry'), L('همه پارامترها را یک‌جا وارد کنید؛ برنامه خودش در هر بخش ثبت می‌کند', 'Enter every parameter here; the program records each one in its section'));
+    const U = UI.qk = UI.qk || {}; if (!U.d || !U.d.dirty) U.d = qkDraft(U.d ? U.d.date : todayISO());
+    const d = U.d, exists = S.daily.find(r => (r.date || r.id) === d.date) || clRec(d.date);
+    const reasons = [['', L('— بدون خاموشی / نامشخص —', '— none / unspecified —')]].concat(Object.keys(CLX().REASON).map(k => [k, L(CLX().REASON[k][0], CLX().REASON[k][1])]));
+    const inp = (attr, key, label, val, lim) => `<div class="field"><label>${esc(label)}</label><input type="number" inputmode="decimal" step="any" ${attr}="${esc(key)}" value="${esc(val)}" ${lim || ''}></div>`;
+    const grpH = (g) => `<div class="card" style="padding:14px 16px;margin-bottom:12px"><div class="fg-title" style="font-weight:800;margin-bottom:8px">${esc(lab(g))}</div><div class="field-row">${g.params.map(p =>
+      inp('data-qp', p.key, lab(p) + (p.unit ? ' (' + p.unit + ')' : ''), d.v[p.key], `${p.min !== undefined ? `min="${p.min}"` : ''} ${p.max !== undefined ? `max="${p.max}"` : ''}`)).join('')}</div></div>`;
+    const only = clOnly(), mapped = clMapped();
+    c.dataset.view = 'quick';
+    c.innerHTML = `
+      <div class="card" style="padding:14px 16px;margin-bottom:12px">${dateField('q_date', L('تاریخ (شمسی)', 'Date (Jalali)'), d.date)}
+        <div class="notice" id="qkHint" style="margin:0 0 8px;display:${exists && !d.dirty ? '' : 'none'}">ℹ️ <div>${L('برای این تاریخ قبلاً اطلاعات ثبت شده؛ مقادیر در فرم آمده‌اند و ذخیره، آن‌ها را ویرایش می‌کند.', 'Data already exists for this date; it is loaded below and saving updates it.')}</div></div>
+        <div class="toolbar" style="margin:0"><button class="btn btn-sm" id="qkCopy">⇩ ${L('پر کردن خالی‌ها از آخرین روز ثبت‌شده', 'Fill empty fields from the latest recorded day')}</button><button class="btn btn-sm btn-ghost" id="qkClear">✕ ${L('پاک کردن فرم', 'Clear form')}</button></div></div>
+      ${spec.groups.map(grpH).join('')}
+      <div class="card" style="padding:14px 16px;margin-bottom:12px"><div class="fg-title" style="font-weight:800;margin-bottom:8px">${L('فقط برای گزارش تحویلی کارفرما', 'Client delivery report only')}</div>
+        <div class="field-row">${only.map(p => inp('data-qc', p.id, clName(p) + (p.unit ? ' (' + p.unit + ')' : ''), d.cv[p.id], `${p.min !== undefined ? `min="${p.min}"` : ''} ${p.max !== undefined ? `max="${p.max}"` : ''}`)).join('')}
+          <div class="field"><label>${L('علت خاموشی', 'Shutdown reason')}</label><select data-qf="reason">${reasons.map(r => `<option value="${esc(r[0])}" ${r[0] === d.reason ? 'selected' : ''}>${esc(r[1])}</option>`).join('')}</select></div>
+          <div class="field"><label>${L('توضیح خاموشی (اختیاری)', 'Shutdown note (optional)')}</label><input type="text" data-qf="rnote" value="${esc(d.rnote)}"></div></div>
+        <div style="font-size:12px;color:var(--text-muted);line-height:1.9;margin-top:6px">${L('این پارامترهای گزارش کارفرما از همان مقادیر بالا خودکار پر می‌شوند: ', 'These client-report parameters are filled automatically from the values above: ')}<b>${mapped.map(p => esc(clName(p))).join('، ')}</b></div></div>
+      <div class="toolbar"><button class="btn btn-primary" id="qkSave">💾 ${L('ذخیره در همه بخش‌ها', 'Save to all sections')}</button><span id="qkStat" style="font-size:12px;color:var(--text-muted)"></span></div>`;
+    const dirty = () => { d.dirty = true; };
+    const paint = () => { let n = 0; c.querySelectorAll('[data-qp]').forEach(i => { const p = PBY[i.dataset.qp], v = i.value === '' ? null : Number(toEn(i.value)), l = limOf(p.key); const bad = v != null && (isNaN(v) || (p.min !== undefined && v < p.min) || (p.max !== undefined && v > p.max)), out = v != null && !bad && ((l.max != null && v > l.max) || (l.min != null && v < l.min)); i.style.borderColor = bad ? '#dc2626' : out ? '#d97706' : ''; i.style.background = bad ? 'rgba(220,38,38,.08)' : out ? 'rgba(217,119,6,.10)' : ''; if (v != null) n++; });
+      document.getElementById('qkStat').textContent = L('مقادیر وارد‌شده: ', 'Values entered: ') + D(n) + L(' — قرمز = نامعتبر، نارنجی = خارج از حد مجاز', ' — red = invalid, orange = outside limit'); };
+    c.querySelectorAll('[data-qp]').forEach(i => i.oninput = () => { d.v[i.dataset.qp] = i.value; dirty(); paint(); });
+    c.querySelectorAll('[data-qc]').forEach(i => i.oninput = () => { d.cv[i.dataset.qc] = i.value; dirty(); });
+    c.querySelectorAll('[data-qf]').forEach(i => i.oninput = i.onchange = () => { d[i.dataset.qf] = i.value; dirty(); });
+    c.querySelectorAll('#q_date select').forEach(sl => sl.onchange = () => {
+      const iso = dateVal(c, 'q_date'); if (iso === d.date) return;
+      const go2 = () => { U.d = qkDraft(iso); vQuick(c); };
+      if (d.dirty) modal(L('تغییرات ذخیره‌نشده', 'Unsaved changes'), `<div style="font-size:14px">${L('با رفتن به تاریخ دیگر، تغییرات ذخیره‌نشدهٔ این روز دور ریخته می‌شود.', 'Moving to another date discards the unsaved changes of this day.')}</div>`, async () => { go2(); }); else go2();
+    });
+    document.getElementById('qkClear').onclick = () => { const dt = d.date; U.d = qkDraft('0000-00-00'); U.d.date = dt; vQuick(c); };
+    document.getElementById('qkCopy').onclick = () => {
+      const prev = [...S.daily].filter(r => (r.date || r.id) < d.date).sort((a, b) => (b.date || b.id).localeCompare(a.date || a.id))[0];
+      if (!prev || !prev.values) { toast(L('روز قبلی برای کپی پیدا نشد', 'No earlier day found')); return; }
+      let n = 0; ALLP.forEach(p => { const x = prev.values[p.key]; if (x != null && x !== '' && (d.v[p.key] === '' || d.v[p.key] == null)) { d.v[p.key] = String(x); n++; } });
+      if (n) { dirty(); vQuick(c); } toast(n ? L('مقادیر پر شد: ', 'Filled: ') + D(n) + L(' (از ', ' (from ') + jStr(prev.date || prev.id) + ')' : L('مقدار خالی برای پر کردن نبود', 'No empty field to fill'));
+    };
+    document.getElementById('qkSave').onclick = async () => {
+      const values = {}; let bad = null;
+      ALLP.forEach(p => {
+        const raw = toEn(String(d.v[p.key] == null ? '' : d.v[p.key])).trim(); if (raw === '') { values[p.key] = null; return; }
+        const n = Number(raw); if (isNaN(n)) { bad = lab(p); return; }
+        if ((p.min !== undefined && n < p.min) || (p.max !== undefined && n > p.max)) { bad = lab(p) + ` (${p.min !== undefined ? p.min : ''}–${p.max !== undefined ? p.max : ''})`; return; }
+        values[p.key] = n;
+      });
+      const cvals = {}; clOnly().forEach(p => {
+        const raw = toEn(String(d.cv[p.id] == null ? '' : d.cv[p.id])).trim(); if (raw === '') { cvals[p.id] = null; return; }
+        const n = Number(raw); if (isNaN(n) || (p.min !== undefined && n < p.min) || (p.max !== undefined && n > p.max)) { bad = clName(p); return; } cvals[p.id] = n;
+      });
+      if (bad) { toast(L('مقدار نامعتبر: ', 'Invalid value: ') + bad); return; }
+      const anyD = Object.values(values).some(v => v !== null), anyC = Object.values(cvals).some(v => v !== null) || d.reason || String(d.rnote).trim();
+      if (!anyD && !anyC) { toast(L('حداقل یک مقدار وارد کنید', 'Enter at least one value')); return; }
+      try {
+        const old = S.daily.find(r => (r.date || r.id) === d.date), oldVals = (old && old.values) || {};
+        const merged = Object.assign({}, oldVals); ALLP.forEach(p => { merged[p.key] = values[p.key] !== null ? values[p.key] : (d.v[p.key] === '' ? null : oldVals[p.key]); });
+        if (anyD) { await fbSet('daily', d.date, { date: d.date, values: merged, updatedAt: new Date().toISOString() }); logAct(old ? L('ویرایش اطلاعات روزانه (ورود یکجا)', 'Updated daily data (all-in-one)') : L('ثبت اطلاعات روزانه (ورود یکجا)', 'Entered daily data (all-in-one)'), jStr(d.date)); }
+        /* client record: mapped parameters follow the daily value; a client value typed by hand that differs is kept */
+        const ex = clRec(d.date), cv = Object.assign({}, (ex && ex.v) || {}); let kept = 0;
+        clMapped().forEach(p => {
+          const nv = merged[p.src]; if (nv == null) return; const ev = cv[p.id], pv = oldVals[p.src];
+          if (ev == null || ev === '' || (pv != null && Number(ev) === Number(pv)) || Number(ev) === Number(nv)) cv[p.id] = nv; else kept++;
+        });
+        clOnly().forEach(p => { if (cvals[p.id] !== null) cv[p.id] = cvals[p.id]; else if (d.cv[p.id] === '') cv[p.id] = null; });
+        const hasC = Object.values(cv).some(v => v != null && v !== '') || d.reason || String(d.rnote).trim();
+        if (hasC) await fbSet('client', d.date, { date: d.date, v: cv, outageReason: d.reason || (ex && ex.outageReason) || '', outageNote: String(d.rnote || '').trim() || (ex && ex.outageNote) || '', works: (ex && ex.works) || [], note: (ex && ex.note) || '', by: (window.Role && window.Role.user && window.Role.user()) || '', updatedAt: new Date().toISOString() });
+        const out = ALLP.filter(p => { const l = limOf(p.key), v = merged[p.key]; return l && v != null && ((l.max != null && v > l.max) || (l.min != null && v < l.min)); }).map(p => lab(p));
+        d.dirty = false; U.d = qkDraft(d.date);
+        toast(L('ذخیره شد: ثبت روزانه، نقاط نمونه‌برداری، سلامت RO و گزارش‌ها', 'Saved: daily data, sampling points, RO health and reports') + (hasC ? L(' + گزارش کارفرما', ' + client report') : '') + (kept ? L(' — ' + D(kept) + ' مقدار دستیِ گزارش کارفرما که فرق داشت تغییر نکرد', ' — ' + kept + ' hand-typed client value(s) kept') : '') + (out.length ? L(' — ⚠ خارج از حد: ', ' — ⚠ outside limit: ') + out.join('، ') : ''));
+        vQuick(c);
+      } catch (e) { console.error(e); }
+    };
+    paint();
+  }
+
+  /* =====================================================================
+     REPORT CENTRE  (مرکز گزارش‌ها) — every report in one place: pick → print / PDF / Word / Excel, or a bundle
+     ===================================================================== */
+  function rcRange(k) {
+    const R = UI.rc, jy = R.jy, jm = R.jm, jd = Math.min(R.jd, daysInJ(jy, jm));
+    if (k === 'daily') { const iso = jToISO(jy, jm, jd); return { kind: k, from: iso, to: iso, label: jStr(iso), jy, jm, jd, days: [iso] }; }
+    if (k === 'monthly') { const n = daysInJ(jy, jm), from = jToISO(jy, jm, 1), days = []; for (let i = 0; i < n; i++) days.push(addDays(from, i)); return { kind: k, from, to: days[n - 1], label: mName(jm) + ' ' + D(jy), jy, jm, jd: 0, days }; }
+    const from = jToISO(jy, 1, 1), to = jToISO(jy, 12, daysInJ(jy, 12)); return { kind: k, from, to, label: L('سال ', 'Year ') + D(jy), jy, jm: 0, jd: 0, days: [] };
+  }
+  const rcKey = (rg) => rg.kind === 'daily' ? rg.from : rg.kind === 'monthly' ? rg.jy + '-' + String(rg.jm).padStart(2, '0') : String(rg.jy);
+  const rcList = (title, head, rows, extra) => ({ title: lab(spec.title) + ' — ' + title, subtitle: '', meta: [[L('تعداد', 'Count'), D(rows.length)]].concat(extra || []), sections: [{ title, table: { head, rows } }] });
+  const RC = () => [
+    { id: 'client', ic: '📝', admin: true, own: true, fa: 'گزارش تحویلی به کارفرما', en: 'Client delivery report', kinds: ['daily', 'monthly', 'yearly'],
+      d: ['تولید و خروجی کارخانه + کارهای انجام‌شده (بدون لوگو، «تهیه کننده» بالای گزارش). همیشه فایل جدا می‌شود.', 'Plant output & work done (no logo). Always a separate file.'], view: 'client',
+      build: async (rg) => { const key = rg.kind === 'daily' ? 'daily-' + rg.from : rg.kind === 'monthly' ? 'monthly-' + rg.jy + '-' + String(rg.jm).padStart(2, '0') : 'yearly-' + rg.jy;
+        const r = await CLX().build(rg.kind, rg, { params: clActive(), days: S.client || [], remarks: (S.clientNotes || {})[key] || '' }, clH()); r.withLogo = false; return r; }, name: (rg) => 'Client-Report-' + { daily: 'Daily', monthly: 'Monthly', yearly: 'Yearly' }[rg.kind] + '-' + rcKey(rg) },
+    { id: 'full', ic: '🗂', fa: 'گزارش جامع یکپارچه', en: 'Comprehensive integrated report', kinds: ['daily', 'monthly'], d: ['همه ثبت‌ها، تعمیرات، بازدیدها و دستورکارها در بازه.', 'Every record, repair, inspection and work order in the period.'], build: (rg) => buildFull(rg), name: (rg) => spec.id + '-full-' + rcKey(rg) },
+    { id: 'six', ic: '🧪', fa: 'گزارش جامع ۶ نقطه نمونه‌برداری', en: 'Six-point sampling report', kinds: ['daily', 'monthly', 'yearly'], d: ['PFD و مقایسه پارامترها در نقاط ۱ تا ۶ با حدود مجاز.', 'PFD and parameter comparison at points 1–6 with limits.'], view: 'qreport',
+      build: async (rg) => { UI.qr = { mode: { daily: 'day', monthly: 'month', yearly: 'year' }[rg.kind], jy: rg.jy, jm: rg.jm || 1, jd: rg.jd || 1 }; return qBuildRep(); }, name: (rg) => spec.id + '-six-point-' + rcKey(rg) },
+    { id: 'stats', ic: '📈', fa: 'آمار و نمودار همه بخش‌ها', en: 'Statistics & charts (all sections)', kinds: ['daily', 'monthly', 'yearly'], d: ['روند و میانگین همه گروه پارامترها و تعمیرات با نمودار. (روزانه = روزهای ماه، ماهانه = ماه‌های سال)', 'Trends and averages of all groups with charts.'], view: 'reports',
+      build: async (rg) => { const A = UI.an, sv = { scope: A.scope, mode: A.mode, jy: A.jy, jm: A.jm }; Object.assign(A, { scope: 'all', mode: rg.kind, jy: rg.jy, jm: rg.jm || sv.jm }); try { await ensureChart(); return await getReport(); } finally { Object.assign(A, sv); } }, name: (rg) => spec.id + '-statistics-' + rg.kind + '-' + rcKey(rg) },
+    { id: 'equip', ic: '⚙', fa: 'فهرست تجهیزات', en: 'Equipment register', np: true, d: ['همه تجهیزات با سریال، محل و تاریخ نصب.', 'All equipment with serial, location and install date.'],
+      build: async () => rcList(L('فهرست تجهیزات', 'Equipment register'), [L('دسته', 'Category'), L('نام', 'Name'), L('سریال / پلاک', 'Serial'), L('محل نصب', 'Location'), L('تاریخ نصب', 'Install date')], [...S.equipment].sort((a, b) => a.name.localeCompare(b.name)).map(e => [catLab(e.category), e.name, e.serial || '—', e.location || '—', e.installDate ? jStr(e.installDate) : '—'])), name: () => spec.id + '-equipment' },
+    { id: 'pm', ic: '📅', fa: 'بازدیدهای دوره‌ای', en: 'Periodic inspections', np: true, d: ['وضعیت، تناوب، آخرین انجام و موعد بعدی همه بازدیدها.', 'Status, interval, last done and next due.'],
+      build: async () => { const stL = (k) => k === 'overdue' ? L('معوق', 'Overdue') : k === 'soon' ? L('نزدیک موعد', 'Due soon') : L('به‌روز', 'On time'); const rows = S.pm.map(p => ({ p, s: pmStat(p) })).sort((a, b) => a.s.d - b.s.d);
+        return rcList(L('بازدیدهای دوره‌ای', 'Periodic inspections'), [L('وضعیت', 'Status'), L('تجهیز', 'Equipment'), L('بازدید', 'Inspection'), L('تناوب', 'Interval'), L('آخرین انجام', 'Last done'), L('موعد بعدی', 'Next due')], rows.map(({ p, s }) => [stL(s.k), eqName(p.equipmentId), p.title, freqL(p.freqDays), p.lastDone ? jStr(p.lastDone) : '—', jStr(s.due)])); }, name: () => spec.id + '-inspections' },
+    { id: 'cm', ic: '🔧', fa: 'تعمیرات و خرابی‌ها', en: 'Repairs & failures', np: true, d: ['همه رکوردهای تعمیر با اقدام، تکنسین و متریال.', 'All repair records with action, technician, materials.'],
+      build: async () => rcList(L('تعمیرات و خرابی‌ها', 'Repairs & failures'), [L('وضعیت', 'Status'), L('تاریخ', 'Date'), L('تجهیز', 'Equipment'), L('شرح', 'Issue'), L('اقدام', 'Action'), L('تکنسین', 'Technician'), L('متریال', 'Materials')], [...S.cm].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(x => [x.status === 'open' ? L('باز', 'Open') : L('بسته‌شده', 'Closed'), jStr(x.date), eqName(x.equipmentId), x.issue || '', x.action || '', x.technician || '—', x.materials || '—'])), name: () => spec.id + '-repairs' },
+    ...(spec.workOrders ? [{ id: 'wo', ic: '📋', fa: 'دستورکارها', en: 'Work orders', np: true, d: ['همه دستورکارها با وضعیت، مسئول و ساعت کار.', 'All work orders with status, assignee and hours.'],
+      build: async () => rcList(L('دستورکارها', 'Work orders'), [L('شماره', 'No.'), L('وضعیت', 'Status'), L('اولویت', 'Priority'), L('تاریخ', 'Date'), L('تجهیز', 'Equipment'), L('نوع', 'Type'), L('شرح', 'Description'), L('مسئول', 'Assignee'), L('مهلت', 'Due'), L('ساعت', 'Hours')], [...S.wo].sort((a, b) => (b.date || '').localeCompare(a.date || '') || String(b.no).localeCompare(String(a.no))).map(w => [w.no || '—', woStatL(w.status), woPrioL(w.priority), jStr(w.date), eqName(w.equipmentId), woTypeL(w.type), w.description || '', w.doneBy || w.assignee || '—', w.dueDate ? jStr(w.dueDate) : '—', w.hours == null ? '—' : num(w.hours, 1)])), name: () => spec.id + '-work-orders' }] : []),
+    { id: 'log', ic: '🕘', admin: true, fa: 'لاگ فعالیت کاربران', en: 'Activity log', np: true, d: ['۴۰۰ فعالیت آخر.', 'Latest 400 actions.'],
+      build: async () => rcList(L('لاگ فعالیت', 'Activity log'), [L('تاریخ و ساعت', 'Date & time'), L('عملیات', 'Action'), L('جزئیات', 'Details')], [...S.log].sort((a, b) => (b.at || '').localeCompare(a.at || '')).slice(0, 400).map(r => [jStr((r.at || '').slice(0, 10)) + ' ' + D((r.at || '').slice(11, 16)), r.action, r.detail || ''])), name: () => spec.id + '-activity-log' }
+  ].filter(r => !r.admin || isAdminR());
+  async function rcPrintPdf(rep, name) {
+    const old = RK.download; let blob = null; RK.download = (b) => { blob = b; };
+    try { await RK.pdf(rep, name); } finally { RK.download = old; }
+    if (!blob) return; const url = URL.createObjectURL(blob), w = window.open(url, '_blank'); if (!w) RK.download(blob, name + '.pdf');
+  }
+  async function rcRun(ids, fmt) {
+    const R = UI.rc, all = RC(), items = ids.map(i => all.find(x => x.id === i)).filter(Boolean); if (!items.length) { toast(L('گزارشی انتخاب نشده است', 'No report selected')); return; }
+    const skipped = [], jobs = [];
+    items.forEach(it => { const k = it.np ? 'daily' : (it.kinds.includes(R.kind) ? R.kind : null); if (!k) { skipped.push(L(it.fa, it.en)); return; } jobs.push({ it, rg: it.np ? null : rcRange(k) }); });
+    if (!jobs.length) { toast(L('این نوع بازه برای گزارش‌های انتخاب‌شده پشتیبانی نمی‌شود', 'This period type is not supported by the selected reports')); return; }
+    const built = []; for (const j of jobs) built.push({ j, rep: await j.it.build(j.rg), name: j.it.name(j.rg) });
+    const bundle = R.merge ? built.filter(b => !b.j.it.own) : [], single = built.filter(b => !bundle.includes(b)), out = [];
+    if (bundle.length > 1) {
+      const rg = rcRange(R.kind), sections = []; bundle.forEach(b => { sections.push({ title: '■ ' + b.rep.title, note: b.rep.subtitle || '' }); (b.rep.sections || []).forEach(x => sections.push(x)); });
+      out.push({ rep: { title: lab(spec.title) + ' — ' + L('بسته گزارش', 'Report bundle'), subtitle: rg.label, meta: [[L('گزارش‌ها', 'Reports'), bundle.map(b => b.rep.title.split(' — ').pop()).join('، ')]], sections }, name: spec.id + '-bundle-' + rcKey(rg) });
+    } else bundle.forEach(b => single.push(b));
+    single.forEach(b => out.push({ rep: b.rep, name: b.name }));
+    for (const o of out) { if (fmt === 'print') await rcPrintPdf(o.rep, o.name); else if (fmt === 'pdf') await RK.pdf(o.rep, o.name); else if (fmt === 'word') await RK.word(o.rep, o.name); else await RK.excel(o.rep, o.name); await new Promise(r => setTimeout(r, 350)); }
+    toast(L('آماده شد: ', 'Ready: ') + D(out.length) + L(' فایل', ' file(s)') + (skipped.length ? L(' — برای این بازه پشتیبانی نشد: ', ' — not available for this period: ') + skipped.join('، ') : ''));
+  }
+  function vRCenter(c) {
+    setTitle(L('مرکز گزارش‌ها', 'Report centre'), L('همه گزارش‌ها کنار هم: انتخاب کنید و چاپ یا دانلود بگیرید', 'All reports side by side: pick, then print or download'));
+    const t = isoToJ(todayISO()), R = UI.rc = UI.rc || { kind: 'monthly', jy: t.year, jm: t.month, jd: t.day, sel: [], merge: true };
+    const list = RC(), cy = curJY(), st = 'padding:8px 10px;border-radius:9px;border:1px solid var(--border-strong,#c5d3dc);background:var(--panel-2,#eef5f7);color:var(--text,#0f2438);font-family:inherit;font-size:13px;';
+    const sup = (it) => it.np ? true : it.kinds.includes(R.kind);
+    const fmtBtns = (id) => [['print', '🖨'], ['pdf', '📄 PDF'], ['word', '📝 Word'], ['excel', '📊 Excel']].map(([k, l]) => `<button class="btn btn-sm ${k === 'pdf' ? 'btn-primary' : ''}" data-rcx="${id}|${k}" title="${k === 'print' ? esc(L('چاپ / مشاهده', 'Print / view')) : ''}">${l}</button>`).join('');
+    c.dataset.view = 'rcenter';
+    c.innerHTML = `<div class="card" style="padding:14px 16px;margin-bottom:12px"><div class="panel-title"><h3>${L('بازهٔ گزارش', 'Report period')}</h3></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="rc_k" style="${st}">${[['daily', L('روزانه', 'Daily')], ['monthly', L('ماهانه', 'Monthly')], ['yearly', L('سالانه', 'Yearly')]].map(([k, l]) => `<option value="${k}" ${R.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <select id="rc_y" style="${st}">${Array.from({ length: 8 }, (_, i) => cy - 6 + i).map(y => `<option value="${y}" ${y === R.jy ? 'selected' : ''}>${D(y)}</option>`).join('')}</select>
+          <select id="rc_m" style="${st};${R.kind === 'yearly' ? 'display:none' : ''}">${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${i + 1 === R.jm ? 'selected' : ''}>${mName(i + 1)}</option>`).join('')}</select>
+          <select id="rc_d" style="${st};${R.kind === 'daily' ? '' : 'display:none'}">${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}" ${i + 1 === R.jd ? 'selected' : ''}>${D(i + 1)}</option>`).join('')}</select></div></div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px">${list.map(it => { const ok = sup(it), on = R.sel.includes(it.id) && ok;
+        return `<div class="card" style="padding:12px 14px;margin:0;${ok ? '' : 'opacity:.55'}"><label style="display:flex;gap:8px;align-items:flex-start;cursor:${ok ? 'pointer' : 'not-allowed'}"><input type="checkbox" data-rcs="${it.id}" ${on ? 'checked' : ''} ${ok ? '' : 'disabled'} style="margin-top:4px"><div><div style="font-weight:800;font-size:14px">${it.ic} ${esc(L(it.fa, it.en))}</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;line-height:1.8">${esc(L(it.d[0], it.d[1]))}${it.np ? ' ' + esc(L('(کل اطلاعات؛ بدون بازه)', '(all data; no period)')) : ''}${ok ? '' : ' — ' + esc(L('برای این بازه موجود نیست', 'not available for this period'))}</div></div></label>
+          <div class="toolbar" style="margin:10px 0 0;gap:6px;flex-wrap:wrap">${ok ? fmtBtns(it.id) : ''}${it.view ? `<button class="btn btn-sm btn-ghost" data-rcv="${it.view}">${it.id === 'client' ? L('ثبت و مدیریت', 'Entry & settings') : L('مشاهده', 'View')}</button>` : ''}</div></div>`; }).join('')}</div>
+      <div class="card" style="padding:12px 16px;margin-top:14px;position:sticky;bottom:8px;border-inline-start:4px solid var(--mc,#1565c0)"><div style="font-weight:800;margin-bottom:6px">📦 ${L('بستهٔ گزارش', 'Report bundle')} <span class="u" id="rcCnt"></span></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn btn-sm btn-ghost" id="rcAll">${L('انتخاب همه', 'Select all')}</button><button class="btn btn-sm btn-ghost" id="rcNone">${L('پاک کردن انتخاب', 'Clear')}</button>
+          <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="rcMerge" ${R.merge ? 'checked' : ''}> ${L('ادغام در یک فایل (گزارش کارفرما همیشه جداست)', 'Merge into one file (client report is always separate)')}</label>
+          <div style="flex:1"></div>${[['print', '🖨 ' + L('چاپ', 'Print')], ['pdf', '📄 PDF'], ['word', '📝 Word'], ['excel', '📊 Excel']].map(([k, l]) => `<button class="btn ${k === 'pdf' ? 'btn-primary' : ''}" data-rcb="${k}">${l}</button>`).join('')}</div></div>`;
+    const cnt = () => { document.getElementById('rcCnt').textContent = '(' + D(R.sel.filter(i => list.some(x => x.id === i && sup(x))).length) + L(' گزارش انتخاب‌شده', ' selected') + ')'; }; cnt();
+    const re = () => vRCenter(c);
+    [['rc_k', v => { R.kind = v; }], ['rc_y', v => { R.jy = +v; }], ['rc_m', v => { R.jm = +v; }], ['rc_d', v => { R.jd = +v; }]].forEach(([id, f]) => document.getElementById(id).onchange = (e) => { f(e.target.value); re(); });
+    c.querySelectorAll('[data-rcs]').forEach(b => b.onchange = () => { R.sel = R.sel.filter(x => x !== b.dataset.rcs); if (b.checked) R.sel.push(b.dataset.rcs); cnt(); });
+    document.getElementById('rcAll').onclick = () => { R.sel = list.filter(sup).map(x => x.id); re(); };
+    document.getElementById('rcNone').onclick = () => { R.sel = []; re(); };
+    document.getElementById('rcMerge').onchange = (e) => { R.merge = e.target.checked; };
+    const busy = async (btn, fn) => { const old = btn.textContent; btn.disabled = true; btn.textContent = '…'; try { await fn(); } catch (e) { console.error(e); toast(L('خطا در ساخت گزارش — اتصال اینترنت را بررسی کنید', 'Report failed — check your connection')); } btn.disabled = false; btn.textContent = old; };
+    c.querySelectorAll('[data-rcx]').forEach(b => b.onclick = () => busy(b, () => { const [id, k] = b.dataset.rcx.split('|'); return rcRun([id], k); }));
+    c.querySelectorAll('[data-rcb]').forEach(b => b.onclick = () => busy(b, () => rcRun(R.sel.filter(i => list.some(x => x.id === i && sup(x))), b.dataset.rcb)));
+    c.querySelectorAll('[data-rcv]').forEach(b => b.onclick = () => go(b.dataset.rcv));
   }
 
   /* =====================================================================
