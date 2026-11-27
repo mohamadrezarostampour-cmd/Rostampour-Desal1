@@ -179,8 +179,8 @@ function computeAlerts() {
       const l = lim[k] || {}, v = r.values && r.values[k];
       if (v === null || v === undefined || v === '' || isNaN(Number(v))) return;
       const p = P.find(x => x.key === k); const name = p ? (isFa() ? p.fa : p.en) : k; const unit = p && p.unit ? ' ' + p.unit : '';
-      if (l.max != null && l.max !== '' && Number(v) > Number(l.max)) add({ key: `param:${src}:${k}:${rd}:hi`, level: 'red', mode: MODE_OF[src], view: 'dashboard', fa: `${name} = ${toFaD(v)}${unit} — بیشتر از حد مجاز (${toFaD(l.max)}) در ${jStr(rd)}`, en: `${name} = ${v}${unit} — above limit (${l.max}) on ${jStr(rd)}` });
-      if (l.min != null && l.min !== '' && Number(v) < Number(l.min)) add({ key: `param:${src}:${k}:${rd}:lo`, level: 'red', mode: MODE_OF[src], view: 'dashboard', fa: `${name} = ${toFaD(v)}${unit} — کمتر از حد مجاز (${toFaD(l.min)}) در ${jStr(rd)}`, en: `${name} = ${v}${unit} — below limit (${l.min}) on ${jStr(rd)}` });
+      if (l.max != null && l.max !== '' && Number(v) > Number(l.max)) add({ key: `param:${src}:${k}:${rd}:hi`, level: 'red', mode: MODE_OF[src], view: 'pfd', fa: `${name} = ${toFaD(v)}${unit} — بیشتر از حد مجاز (${toFaD(l.max)}) در ${jStr(rd)}`, en: `${name} = ${v}${unit} — above limit (${l.max}) on ${jStr(rd)}` });
+      if (l.min != null && l.min !== '' && Number(v) < Number(l.min)) add({ key: `param:${src}:${k}:${rd}:lo`, level: 'red', mode: MODE_OF[src], view: 'pfd', fa: `${name} = ${toFaD(v)}${unit} — کمتر از حد مجاز (${toFaD(l.min)}) در ${jStr(rd)}`, en: `${name} = ${v}${unit} — below limit (${l.min}) on ${jStr(rd)}` });
     });
   });
 

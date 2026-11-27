@@ -261,8 +261,14 @@ button{font-family:inherit;}
 #menuToggle{display:none !important}
 .shell-main,.main-wrap{margin-inline-start:0 !important}
 </style>
+<link rel="stylesheet" href="aurora.css">
 </head>
 <body>
+<div id="splash" aria-hidden="true"><div class="sp-rays"></div><div class="sp-glow"></div>
+  <div class="sp-scene"><div class="sp-slab"><div class="sp-edge" style="transform:translateZ(-8px)"></div><div class="sp-edge" style="transform:translateZ(-6px)"></div><div class="sp-edge" style="transform:translateZ(-4px)"></div><div class="sp-edge" style="transform:translateZ(-2px)"></div><div class="sp-edge" style="transform:translateZ(0px)"></div><div class="sp-edge" style="transform:translateZ(2px)"></div><div class="sp-edge" style="transform:translateZ(4px)"></div><div class="sp-edge" style="transform:translateZ(6px)"></div><div class="sp-edge" style="transform:translateZ(8px)"></div><div class="sp-face sp-front"><img src="banner-logo.png" alt=""></div><div class="sp-face sp-back"><img src="banner-logo.png" alt=""></div></div></div>
+  <div class="sp-name">SWRO NV</div><div class="sp-sub">Rostampour Engineering Co. — Desalination Plant 1</div><div class="sp-bar"><i></i></div></div>
+<script>(function(){var s=document.getElementById('splash');if(!s)return;var skip=false;try{skip=!!sessionStorage.getItem('swro-splash')||/[?&]eq=/.test(location.search)||/[?&]nosplash/.test(location.search);sessionStorage.setItem('swro-splash','1');}catch(e){}
+if(skip){s.remove();return;}var done=false;function end(){if(done)return;done=true;s.classList.add('out');setTimeout(function(){s.remove();},800);}s.addEventListener('click',end);setTimeout(end,3700);})();</script>
 
 <div class="login-screen" id="loginScreen">
   <div class="login-card">

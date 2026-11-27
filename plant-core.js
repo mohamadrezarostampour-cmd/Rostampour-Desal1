@@ -96,7 +96,7 @@ export function startPlant(spec) {
   const roleNow = () => (window.Role ? window.Role.forUser(auth.currentUser) : null);
   const isAdminR = () => roleNow() === 'admin';
   const canDailyR = () => { const r = roleNow(); return r === 'admin' || r === 'operator'; };
-  const allowedView = (v) => { const r = roleNow(); if (r === 'admin') return true; if (r === 'operator') return ['dashboard', 'stage', 'health', 'entry', 'quick', 'client', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); if (r === 'viewer') return ['dashboard', 'stage', 'health', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); return false; };
+  const allowedView = (v) => { const r = roleNow(); if (r === 'admin') return true; if (r === 'operator') return ['dashboard', 'pfd', 'stage', 'health', 'entry', 'quick', 'client', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); if (r === 'viewer') return ['dashboard', 'pfd', 'stage', 'health', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport'].includes(v); return false; };
   const guard = (n, kind) => {
     const r = roleNow();
     if (r === 'admin') return;
@@ -215,8 +215,9 @@ export function startPlant(spec) {
      ===================================================================== */
   const NAV = [
     ['dashboard', 'dash', ['داشبورد', 'Dashboard']],
-    ['entry', 'entry', ['ثبت و ویرایش اطلاعات روزانه', 'Daily data entry']],
-    ['quick', 'entry', ['ورود یکجای پارامترها', 'All-in-one parameter entry']],
+    ['pfd', 'chart', ['نقشه‌های PFD', 'PFD diagrams']],
+    ['entry', 'entry', ['سوابق و ویرایش روزانه', 'Daily records & edit']],
+    ['quick', 'entry', ['ثبت پارامترهای ورودی', 'Input parameters entry']],
     ['rcenter', 'doc', ['مرکز گزارش‌ها', 'Report centre']],
     ['reports', 'chart', ['گزارش‌ها و آمار', 'Reports & statistics']],
     ['qreport', 'doc', ['گزارش جامع ۶ نقطه', 'Six-point full report']],
@@ -241,7 +242,7 @@ export function startPlant(spec) {
       <aside class="sidebar" id="sidebar">
         <div class="brand"><div class="brand-logo wide"><img src="banner-logo.png" alt="Rostampour Engineering Co."></div>
           <div class="brand-name">${esc(lab(spec.title))}<small>${esc(lab(spec.subtitle))}</small></div></div>
-        <nav class="nav">${NAV.filter(([id]) => allowedView(id) && !(isAdminR() && ['reports', 'qreport', 'client'].includes(id))).map(([id, ic, t]) => `<div class="nav-item ${S.view === id ? 'active' : ''}" data-view="${id}">${svg(ic)}<span>${esc(L(t[0], t[1]))}</span><span class="nav-count" id="cnt_${id}" style="display:none"></span></div>`).join('')}</nav>
+        <nav class="nav">${NAV.filter(([id]) => allowedView(id) && !['entry', 'client'].includes(id) && !(isAdminR() && ['reports', 'qreport'].includes(id))).map(([id, ic, t]) => `<div class="nav-item ${S.view === id ? 'active' : ''}" data-view="${id}">${svg(ic)}<span>${esc(L(t[0], t[1]))}</span><span class="nav-count" id="cnt_${id}" style="display:none"></span></div>`).join('')}</nav>
         <div class="sidebar-foot"><span class="dot-live" id="stDot"></span><span id="stTxt"></span></div>
       </aside>
       <div class="scrim" id="scrim"></div>
@@ -259,14 +260,24 @@ export function startPlant(spec) {
     setStatus();
   }
   function closeSide() { document.getElementById('sidebar').classList.remove('open'); document.getElementById('scrim').classList.remove('show'); }
-  function go(v) { if (!allowedView(v)) { v = 'dashboard'; } S.view = v; closeSide(); root.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === (v === 'stage' ? 'dashboard' : (isAdminR() && ['reports', 'qreport', 'client'].includes(v)) ? 'rcenter' : v))); renderCurrent(); try { document.getElementById('content').scrollTop = 0; window.scrollTo(0, 0); } catch (e) { } }
+  /* one section for every parameter entry: tabs (entry form | daily records | client notes & works) */
+  function entTabs() {
+    const ct = document.getElementById('content'); if (!ct) return; let b = document.getElementById('entTabs');
+    const tabs = [['quick', L('ورود پارامترها', 'Enter parameters')], ['entry', L('سوابق و ویرایش روزانه', 'Daily records & edit')], ['client', L('کارفرما: کارها و توضیحات', 'Client: works & notes')]].filter(([id]) => allowedView(id));
+    if (!['quick', 'entry', 'client'].includes(S.view) || tabs.length < 2) { if (b) b.remove(); return; }
+    if (!b) { b = document.createElement('div'); b.id = 'entTabs'; b.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px'; ct.parentNode.insertBefore(b, ct); }
+    b.innerHTML = tabs.map(([id, t]) => `<button class="btn btn-sm ${id === S.view ? 'btn-primary' : 'btn-ghost'}" data-et="${id}">${esc(t)}</button>`).join('');
+    b.querySelectorAll('[data-et]').forEach(x => x.onclick = () => go(x.dataset.et));
+  }
+  function goQuick(keys) { go('quick'); setTimeout(() => { const el = keys && keys[0] ? document.querySelector(`[data-qp="${keys[0]}"]`) : null; if (el) { try { el.scrollIntoView({ block: 'center' }); el.focus(); } catch (e) { } } }, 60); }
+  function go(v) { if (!allowedView(v)) { v = 'dashboard'; } S.view = v; closeSide(); root.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === (v === 'stage' ? 'pfd' : (isAdminR() && ['reports', 'qreport'].includes(v)) ? 'rcenter' : ['entry', 'client'].includes(v) ? 'quick' : v))); renderCurrent(); try { document.getElementById('content').scrollTop = 0; window.scrollTo(0, 0); } catch (e) { } }
   function setTitle(t, s) { document.getElementById('pgTitle').textContent = t; document.getElementById('pgSub').textContent = s || ''; }
   function destroyCharts() { Object.values(UI.charts).forEach(c => { try { c.destroy(); } catch (e) { } }); UI.charts = {}; }
   function lockUI(c) {   // remove management controls for non-admin users
     if (isAdminR()) return;
     c.querySelectorAll('.rk-exportbar').forEach(el => el.remove());
     if (S.view === 'entry') { c.querySelectorAll('[data-d]').forEach(el => el.remove()); return; }
-    if (S.view === 'stage' || S.view === 'dashboard' || S.view === 'client') return;
+    if (S.view === 'stage' || S.view === 'dashboard' || S.view === 'pfd' || S.view === 'client') return;
     c.querySelectorAll('#add, #lbl').forEach(el => el.remove());
     const hasActions = !!c.querySelector('.row-actions');
     c.querySelectorAll('.row-actions').forEach(el => { const td = el.closest('td'); (td || el).remove(); });
@@ -275,10 +286,11 @@ export function startPlant(spec) {
   function renderCurrent() {
     if (!allowedView(S.view)) S.view = 'dashboard';
     destroyCharts();
-    const f = { dashboard: vDash, stage: vStage, health: vHealth, qreport: vQReport, limits: vLimits, entry: vEntry, quick: vQuick, rcenter: vRCenter, client: vClient, reports: vReports, equipment: vEquip, pm: vPm, cm: vCm, wo: vWo, msearch: vMs, passport: vPassport, log: vLog }[S.view];
+    const f = { dashboard: vDash, pfd: vPfd, stage: vStage, health: vHealth, qreport: vQReport, limits: vLimits, entry: vEntry, quick: vQuick, rcenter: vRCenter, client: vClient, reports: vReports, equipment: vEquip, pm: vPm, cm: vCm, wo: vWo, msearch: vMs, passport: vPassport, log: vLog }[S.view];
     if (!f) return;
     f(document.getElementById('content'));
-    if (isAdminR() && ['reports', 'qreport', 'client'].includes(S.view)) { document.getElementById('content').insertAdjacentHTML('afterbegin', `<div style="margin-bottom:10px"><button class="btn btn-sm btn-ghost" id="rcBack">${isFa() ? '→' : '←'} ${L('بازگشت به مرکز گزارش‌ها', 'Back to report centre')}</button></div>`); document.getElementById('rcBack').onclick = () => go('rcenter'); }
+    if (isAdminR() && ['reports', 'qreport'].includes(S.view)) { document.getElementById('content').insertAdjacentHTML('afterbegin', `<div style="margin-bottom:10px"><button class="btn btn-sm btn-ghost" id="rcBack">${isFa() ? '→' : '←'} ${L('بازگشت به مرکز گزارش‌ها', 'Back to report centre')}</button></div>`); document.getElementById('rcBack').onclick = () => go('rcenter'); }
+    entTabs();
     if (S.view !== 'client') document.getElementById('content').dataset.view = S.view;
     lockUI(document.getElementById('content'));
     [['equipment', S.equipment.length], ['pm', S.pm.length], ['cm', S.cm.filter(c => c.status === 'open').length], ['wo', S.wo.filter(w => w.status !== 'done' && w.status !== 'cancelled').length]].forEach(([id, n]) => {
@@ -328,6 +340,25 @@ export function startPlant(spec) {
   const unitOf = (p) => p.unit || '';
 
   /* =====================================================================
+     PFD SECTION (all process diagrams in one place)
+     ===================================================================== */
+  function vPfd(c) {
+    setTitle(L('نقشه‌های PFD', 'PFD diagrams'), L('نمای کلی کارخانه، شبیه‌ساز، بازپخش زمانی، ریشه‌یابی و نقشهٔ هر مرحله', 'Plant overview, simulator, time replay, root-cause and every stage diagram'));
+    const stg = SP.STAGE_ORDER || Object.keys(SP.STAGES || {});
+    c.innerHTML = `<div class="card" style="padding:10px 12px;margin-bottom:12px"><div style="font-weight:800;font-size:13px;margin-bottom:8px">${L('نقشهٔ هر مرحله (PFD جزئی)', 'Stage diagrams (sub-PFD)')}</div><div style="display:flex;gap:6px;flex-wrap:wrap">${stg.map(k => `<button class="btn btn-sm btn-ghost" data-pst="${k}">${esc(isFa() ? SP.STAGES[k].fa : SP.STAGES[k].en)}</button>`).join('')}</div></div>
+      <style>.replay{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2)}.replay.past{border-color:#d6336c;background:rgba(214,51,108,.07)}.rp-t{font-weight:700;font-size:13px}.rp-d{font-size:12.5px;min-width:150px}
+        .live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(235px,1fr));gap:10px}.live-card{border:2px solid var(--border);border-radius:12px;padding:10px 12px;background:var(--panel-2)}.lc-h{display:flex;align-items:center;gap:7px;font-size:14px}.lc-dot{width:11px;height:11px;border-radius:50%}.lc-s{margin-inline-start:auto;font-size:11px;color:var(--text-muted)}.lc-n{font-size:11px;color:var(--text-dim);margin:2px 0 6px;min-height:28px}.lc-r{display:flex;align-items:center;gap:6px;padding:3px 0;border-top:1px dashed var(--border);cursor:pointer;font-size:12px}.lc-p{flex:1;color:var(--text-muted)}.lc-v{font-family:var(--mono);font-weight:800;min-width:48px;text-align:end}.lc-d{font-size:10.5px;color:var(--text-dim);margin-top:6px}
+        .rc-item{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--panel-2)}.rc-h{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.rc-l{margin:8px 0 0;padding-inline-start:22px;font-size:13px;line-height:1.8}.rc-l li.hot{font-weight:700}.rc-ev{font-size:12px;font-weight:500;color:var(--accent-2)}</style>
+      <div class="card" style="padding:12px"><div id="simBar"></div><div id="pfdMount"></div><div id="replayBar"></div></div>
+      <div id="simPanel"></div>
+      <div id="livePanel"></div>
+      <div id="rootPanel"></div>
+      <div id="healthMini"></div>`;
+    c.querySelectorAll('[data-pst]').forEach(b => b.onclick = () => openStage(b.dataset.pst));
+    drawReplay(); drawMainPfd(); drawLive(); drawRoot(); drawHealthMini();
+  }
+
+  /* =====================================================================
      DASHBOARD
      ===================================================================== */
   function vDash(c) {
@@ -341,14 +372,6 @@ export function startPlant(spec) {
     const todayDone = !!dm[today];
     c.innerHTML = `
       ${todayDone ? '' : `<div class="notice">⚠️ <div>${L('اطلاعات امروز هنوز ثبت نشده است.', "Today's data has not been entered yet.")} <a href="#" id="goEntry" style="color:var(--accent-2);font-weight:700;">${L('ثبت اطلاعات روز', 'Enter data')}</a></div></div>`}
-      <style>.replay{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2)}.replay.past{border-color:#d6336c;background:rgba(214,51,108,.07)}.rp-t{font-weight:700;font-size:13px}.rp-d{font-size:12.5px;min-width:150px}
-        .live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(235px,1fr));gap:10px}.live-card{border:2px solid var(--border);border-radius:12px;padding:10px 12px;background:var(--panel-2)}.lc-h{display:flex;align-items:center;gap:7px;font-size:14px}.lc-dot{width:11px;height:11px;border-radius:50%}.lc-s{margin-inline-start:auto;font-size:11px;color:var(--text-muted)}.lc-n{font-size:11px;color:var(--text-dim);margin:2px 0 6px;min-height:28px}.lc-r{display:flex;align-items:center;gap:6px;padding:3px 0;border-top:1px dashed var(--border);cursor:pointer;font-size:12px}.lc-p{flex:1;color:var(--text-muted)}.lc-v{font-family:var(--mono);font-weight:800;min-width:48px;text-align:end}.lc-d{font-size:10.5px;color:var(--text-dim);margin-top:6px}
-        .rc-item{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--panel-2)}.rc-h{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.rc-l{margin:8px 0 0;padding-inline-start:22px;font-size:13px;line-height:1.8}.rc-l li.hot{font-weight:700}.rc-ev{font-size:12px;font-weight:500;color:var(--accent-2)}</style>
-      <div class="card" style="padding:12px"><div id="simBar"></div><div id="pfdMount"></div><div id="replayBar"></div></div>
-      <div id="simPanel"></div>
-      <div id="livePanel"></div>
-      <div id="rootPanel"></div>
-      <div id="healthMini"></div>
       <div class="grid kpi-row">
         ${kp(L('آخرین ثبت اطلاعات', 'Last data entry'), last ? jStr(last) : '—', last ? (diffDays(today, last) === 0 ? L('امروز', 'today') : D(diffDays(today, last)) + ' ' + L('روز پیش', 'days ago')) : L('بدون ثبت', 'no data'), 'var(--accent-2)')}
         ${kp(L('تعداد تجهیزات', 'Equipment'), D(S.equipment.length), '', 'var(--violet)')}
@@ -362,8 +385,7 @@ export function startPlant(spec) {
         <div class="card" style="margin:0;"><div class="panel-title"><h3>${L('بازدیدهای نیازمند توجه', 'Inspections needing attention')}</h3></div><div class="alert-list">${(() => { const a = S.pm.map(p => ({ p, s: pmStat(p) })).filter(x => x.s.k !== 'ok').sort((x, y) => x.s.d - y.s.d).slice(0, 6); return a.length ? a.map(({ p, s }) => `<div class="alert-item"><span class="tag ${s.k === 'overdue' ? 'tag-red' : 'tag-amber'}">${s.k === 'overdue' ? L('معوق', 'Overdue') : L('نزدیک موعد', 'Due soon')}</span><b>${esc(eqName(p.equipmentId))}</b><span style="color:var(--text-muted)">${esc(p.title)}</span><span style="margin-inline-start:auto" class="cell-mono">${jStr(s.due)}</span></div>`).join('') : `<div class="empty" style="padding:14px"><h4>${L('همه بازدیدها به‌روز است', 'All inspections are up to date')}</h4></div>`; })()}</div></div>
         <div class="card" style="margin:0;"><div class="panel-title"><h3>${L('تعمیرات و خرابی‌های باز', 'Open repairs & failures')}</h3></div><div class="alert-list">${(() => { const a = S.cm.filter(x => x.status === 'open').sort((x, y) => y.date.localeCompare(x.date)).slice(0, 6); return a.length ? a.map(x => `<div class="alert-item"><span class="tag tag-amber">${L('باز', 'Open')}</span><b>${esc(eqName(x.equipmentId))}</b><span style="color:var(--text-muted)">${esc((x.issue || '').slice(0, 60))}</span><span style="margin-inline-start:auto" class="cell-mono">${jStr(x.date)}</span></div>`).join('') : `<div class="empty" style="padding:14px"><h4>${L('مورد بازی وجود ندارد', 'No open items')}</h4></div>`; })()}</div></div>
       </div>`;
-    const ge = document.getElementById('goEntry'); if (ge) ge.onclick = (e) => { e.preventDefault(); go('entry'); };
-    drawReplay(); drawMainPfd(); drawLive(); drawRoot(); drawHealthMini();
+    const ge = document.getElementById('goEntry'); if (ge) ge.onclick = (e) => { e.preventDefault(); go('quick'); };
     drawDashCharts();
   }
   async function drawDashCharts() {
@@ -664,7 +686,7 @@ export function startPlant(spec) {
         ${L('• فشارها و دبی باید همیشه از همان خط شاخص RO و در همان ساعت روز ثبت شوند.', '• Record pressures and flow always from the same reference RO train at the same time of day.')}<br>
         ${L('• پیش‌بینی روز باقی‌مانده با رگرسیون خطی ۲۱ روز اخیر است (حداقل ۵ ثبت)؛ نوسان داده‌ها آن را نامطمئن می‌کند. تصمیم نهایی CIP/تعویض با شماست.', '• Days remaining use a linear fit of the last 21 days (min. 5 entries); noisy data makes it unreliable. The final CIP / replacement decision is yours.')}</div></div>`;
     const hs = document.getElementById('hsSet'); if (hs) hs.onclick = healthSettings;
-    document.getElementById('hsEntry').onclick = () => { UI.filters.entryGroup = 'perf'; go('entry'); };
+    document.getElementById('hsEntry').onclick = () => { const g = spec.groups.find(x => x.id === 'perf'); goQuick(g ? g.params.map(p => p.key) : null); };
     drawHealthCharts(h);
   }
   async function drawHealthCharts(h) {
@@ -680,7 +702,7 @@ export function startPlant(spec) {
   function openStage(id, focus) { UI.stageId = id; UI.stageFocus = focus || ''; UI.stageKey = null; go('stage'); }
   function limTxt(k) { const l = limOf(k); if (l.min == null && l.max == null) return L('حد مجاز تعریف نشده', 'no limit set'); return L('حد مجاز: ', 'Limit: ') + (l.min != null ? D(l.min) : '…') + ' – ' + (l.max != null ? D(l.max) : '…'); }
   function vStage(c) {
-    const id = UI.stageId; if (!id || !SP.STAGES[id]) { go('dashboard'); return; }
+    const id = UI.stageId; if (!id || !SP.STAGES[id]) { go('pfd'); return; }
     const st = SP.STAGES[id], keys = stKeys(id), fa = isFa();
     setTitle(fa ? st.fa : st.en, L('PFD زیرشاخه و پارامترهای این مرحله', 'Sub-PFD and parameters of this stage'));
     const eqs = S.equipment.filter(e => e.stage === id);
@@ -713,8 +735,8 @@ export function startPlant(spec) {
       ${keys.length ? `<div class="chart-card"><div class="ct" id="stCt"></div><div class="chart-box" style="height:250px"><canvas id="stc"></canvas></div></div>` : `<div class="card"><div class="empty"><h4>${L('برای این مرحله پارامتر روزانه‌ای تعریف نشده است', 'No daily parameter is defined for this stage')}</h4></div></div>`}
       <div class="card"><div class="panel-title"><h3>${L('تجهیزات این مرحله', 'Equipment of this stage')}</h3></div>${eqs.length ? `<div class="alert-list">${eqs.map(e => { const o = S.cm.filter(x => x.equipmentId === e.id && x.status === 'open').length; return `<div class="alert-item"><span class="tag tag-blue">${esc(catLab(e.category))}</span><b>${esc(e.name)}</b><span style="color:var(--text-muted)">${esc(e.location || '')}</span>${o ? `<span class="tag tag-amber" style="margin-inline-start:auto">${L('تعمیر باز: ', 'Open repairs: ')}${D(o)}</span>` : ''}</div>`; }).join('')}</div>` : `<div class="empty" style="padding:14px"><h4>${L('تجهیزی به این مرحله وصل نشده', 'No equipment linked to this stage')}</h4><div style="font-size:12px;color:var(--text-muted)">${L('در صفحه «تجهیزات»، هنگام افزودن/ویرایش تجهیز، گزینه «مرحله در PFD» را انتخاب کنید.', 'In “Equipment”, pick “PFD stage” when adding / editing equipment.')}</div></div>`}</div>`;
     SP.renderStage(document.getElementById('stDiag'), id, { fa, focus: UI.stageFocus, off: UI.sim.off, cfg: plantCfg() });
-    document.getElementById('stBack').onclick = () => go('dashboard');
-    const be = document.getElementById('stEntry'); if (be) be.onclick = () => stageEntry(id);
+    document.getElementById('stBack').onclick = () => go('pfd');
+    const be = document.getElementById('stEntry'); if (be) be.onclick = () => goQuick(stKeys(id));
     const bl = document.getElementById('stLim'); if (bl) bl.onclick = () => stageLimits(id);
     c.querySelectorAll('.pcard[data-k]').forEach(el => el.onclick = () => { UI.stageKey = el.dataset.k; c.querySelectorAll('.pcard').forEach(x => x.classList.toggle('sel', x.dataset.k === UI.stageKey)); drawStageChart(keys); });
     drawStageChart(keys);
@@ -876,7 +898,7 @@ export function startPlant(spec) {
     return { date: iso, v, cv, reason: cr.outageReason || '', rnote: cr.outageNote || '', dirty: false };
   }
   function vQuick(c) {
-    setTitle(L('ورود یکجای پارامترها', 'All-in-one parameter entry'), L('همه پارامترها را یک‌جا وارد کنید؛ برنامه خودش در هر بخش ثبت می‌کند', 'Enter every parameter here; the program records each one in its section'));
+    setTitle(L('ثبت پارامترهای ورودی', 'Input parameters entry'), L('همه پارامترها را یک‌جا وارد کنید؛ برنامه خودش در هر بخش (روزانه، نمونه‌برداری، سلامت RO، گزارش کارفرما) ثبت می‌کند', 'Enter every parameter here; the program records each one in every section'));
     const U = UI.qk = UI.qk || {}; if (!U.d || !U.d.dirty) U.d = qkDraft(U.d ? U.d.date : todayISO());
     const d = U.d, exists = S.daily.find(r => (r.date || r.id) === d.date) || clRec(d.date);
     const reasons = [['', L('— بدون خاموشی / نامشخص —', '— none / unspecified —')]].concat(Object.keys(CLX().REASON).map(k => [k, L(CLX().REASON[k][0], CLX().REASON[k][1])]));
@@ -1053,7 +1075,7 @@ export function startPlant(spec) {
         <thead><tr><th>${L('تاریخ', 'Date')}</th>${g.params.map(p => `<th>${esc(lab(p))} ${p.unit ? `<span style="font-weight:400">(${esc(p.unit)})</span>` : ''}</th>`).join('')}<th></th></tr></thead>
         <tbody>${rows.length ? rows.map(r => `<tr><td class="cell-strong cell-mono">${jStr(r.date || r.id)}</td>${g.params.map(p => { const v = (r.values || {})[p.key]; return `<td class="cell-mono">${v === null || v === undefined || v === '' ? '—' : fmtP(p, Number(v))}</td>`; }).join('')}
           <td><div class="row-actions"><span class="icon-sm" data-e="${r.id}" title="${L('ویرایش', 'Edit')}">✎</span><span class="icon-sm" data-d="${r.id}" title="${L('حذف', 'Delete')}">🗑</span></div></td></tr>`).join('') : `<tr><td colspan="${g.params.length + 2}"><div class="empty"><h4>${L('رکوردی ثبت نشده است', 'No records yet')}</h4></div></td></tr>`}</tbody></table></div></div>`;
-    document.getElementById('addDay').onclick = () => dayForm(null);
+    document.getElementById('addDay').onclick = () => go('quick');
     c.querySelectorAll('#entG [data-g]').forEach(b => b.onclick = () => { UI.filters.entryGroup = b.dataset.g; vEntry(c); });
     c.querySelectorAll('[data-e]').forEach(b => b.onclick = () => dayForm(S.daily.find(r => r.id === b.dataset.e)));
     c.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { const r = S.daily.find(x => x.id === b.dataset.d); confirmDel(L('رکورد روز ', 'Delete record of ') + jStr(r.date || r.id) + L(' حذف شود؟', '?'), async () => { await fbDel('daily', r.id); logAct(L('حذف اطلاعات روزانه', 'Deleted daily data'), jStr(r.date || r.id)); toast(L('حذف شد', 'Deleted')); }); });
@@ -1885,7 +1907,7 @@ export function startPlant(spec) {
   function applyNav(n) {
     const v = n && n.view;
     if (!v) return;
-    const ok = () => { if (S.ready && ['dashboard', 'entry', 'client', 'reports', 'qreport', 'health', 'limits', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport', 'log'].includes(v)) { if (v === 'passport') { UI.passEq = n.q || UI.passEq; UI.passSeen = null; UI.passWait = 0; } if (allowedView(v)) go(v); return true; } return false; };
+    const ok = () => { if (S.ready && ['dashboard', 'pfd', 'entry', 'client', 'reports', 'qreport', 'health', 'limits', 'equipment', 'pm', 'cm', 'wo', 'msearch', 'passport', 'log'].includes(v)) { if (v === 'passport') { UI.passEq = n.q || UI.passEq; UI.passSeen = null; UI.passWait = 0; } if (allowedView(v)) go(v); return true; } return false; };
     if (ok()) return;
     clearTimeout(applyNav._t); navTry = 0;
     (function retry() { if (ok() || ++navTry > 40) return; applyNav._t = setTimeout(retry, 300); })();

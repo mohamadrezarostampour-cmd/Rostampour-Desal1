@@ -1,0 +1,88 @@
+/* v8.4 — animated "aurora" theme: pale sky blue, deep navy-blue and coral-pink (loaded after module.css) */
+:root{
+  --bg:#e9f1fb; --bg-elev:rgba(255,255,255,.80); --panel:rgba(255,255,255,.78); --panel-2:rgba(226,238,252,.72);
+  --border:rgba(24,60,130,.12); --border-strong:rgba(24,60,130,.22);
+  --text:#0d2146; --text-muted:#4a6288; --text-dim:#8398b8;
+  --accent:#e8607a; --accent-2:#1f5fc4; --accent-soft:rgba(232,96,122,.13);
+  --coral:#ff6f8b; --violet:#5a5ad6; --mc:#2563c9;
+  --amber:#c47f16; --red:#d43456; --green:#1f9d76;
+  --hover:rgba(24,60,130,.05);
+  --aur1:rgba(255,111,139,.46); --aur2:rgba(37,99,201,.42); --aur3:rgba(14,40,110,.34); --aur4:rgba(160,205,255,.70);
+}
+body.dark-theme{
+  --bg:#060f2a; --bg-elev:rgba(10,24,60,.78); --panel:rgba(14,32,76,.72); --panel-2:rgba(8,20,52,.70);
+  --border:rgba(150,190,255,.15); --border-strong:rgba(150,190,255,.28);
+  --text:#eaf1ff; --text-muted:#9db5de; --text-dim:#6882b0;
+  --accent:#ff7d96; --accent-2:#6aa2ff; --accent-soft:rgba(255,125,150,.16);
+  --coral:#ff7d96; --mc:#4b8bf0;
+  --hover:rgba(255,255,255,.05);
+  --aur1:rgba(255,100,135,.34); --aur2:rgba(60,120,235,.40); --aur3:rgba(20,50,140,.55); --aur4:rgba(70,110,200,.22);
+}
+body{background:var(--bg);}
+/* moving colour fields */
+body::before,body::after{content:"";position:fixed;inset:-20%;z-index:-1;pointer-events:none;will-change:transform;}
+body::before{background:
+  radial-gradient(38% 42% at 18% 22%,var(--aur4),transparent 70%),
+  radial-gradient(34% 40% at 82% 18%,var(--aur2),transparent 72%),
+  radial-gradient(30% 36% at 70% 82%,var(--aur1),transparent 72%);
+  animation:aurA 26s ease-in-out infinite alternate;}
+body::after{background:
+  radial-gradient(32% 38% at 30% 80%,var(--aur1),transparent 72%),
+  radial-gradient(36% 40% at 88% 55%,var(--aur3),transparent 72%),
+  radial-gradient(28% 34% at 8% 48%,var(--aur2),transparent 72%);
+  animation:aurB 34s ease-in-out infinite alternate;opacity:.85;}
+@keyframes aurA{0%{transform:translate3d(-3%,-2%,0) scale(1) rotate(0deg)}50%{transform:translate3d(4%,3%,0) scale(1.08) rotate(4deg)}100%{transform:translate3d(-2%,5%,0) scale(1.03) rotate(-3deg)}}
+@keyframes aurB{0%{transform:translate3d(3%,2%,0) scale(1.05) rotate(0deg)}50%{transform:translate3d(-4%,-3%,0) scale(1) rotate(-5deg)}100%{transform:translate3d(2%,-5%,0) scale(1.1) rotate(3deg)}}
+body.pp-active::before{content:"";}
+/* glass surfaces */
+.sidebar,.topbar,.card,.modal,.modal-head,.modal-foot{-webkit-backdrop-filter:blur(14px) saturate(140%);backdrop-filter:blur(14px) saturate(140%);}
+.card{box-shadow:0 6px 24px rgba(20,50,120,.08);transition:transform .25s ease,box-shadow .25s ease;}
+@media (hover:hover){.card.kpi:hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(20,50,120,.16);}}
+.modal{background:var(--bg-elev);}
+/* coral call-to-action like the reference */
+.btn-primary{background:linear-gradient(135deg,#ff7d96,#f0587a);box-shadow:0 6px 18px rgba(240,88,122,.38);}
+.btn-primary:hover{filter:brightness(1.06);transform:translateY(-1px);}
+.btn{transition:.2s;}
+.nav-item.active{background:linear-gradient(135deg,rgba(255,111,139,.18),rgba(37,99,201,.16));border-color:rgba(255,111,139,.5);}
+.brand-logo{border-color:#ff6f8b;}
+/* gentle entrance for each page */
+.content>*{animation:auFade .5s ease both;}
+@keyframes auFade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){body::before,body::after,.content>*{animation:none!important}}
+body.present::before,body.present::after{animation-duration:60s}
+@media print{body::before,body::after{display:none!important}}
+
+/* ---- shell / login with the same palette ---- */
+:root{--nav:#0b2563;--nav-2:#1f5fc4;--teal:#2f6fd0;--blue:#1f5fc4;}
+body.dark-theme{--teal:#6aa2ff;--nav:#07163d;--nav-2:#133a8a;}
+.login-card{-webkit-backdrop-filter:blur(18px) saturate(150%);backdrop-filter:blur(18px) saturate(150%);box-shadow:0 30px 80px rgba(20,50,130,.25);animation:auFade .8s .1s ease both;}
+.login-logo.wide{background:#fff;box-shadow:0 0 0 4px rgba(255,111,139,.22),0 12px 30px rgba(20,50,130,.25);}
+.field input:focus{border-color:#ff6f8b!important;box-shadow:0 0 0 3px rgba(255,111,139,.18)!important;}
+
+/* ---- startup intro: 3D spinning logo (Sony / Samsung style) ---- */
+#splash{position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 45%,#12306f 0%,#071433 55%,#030a1d 100%);overflow:hidden;cursor:pointer;transition:opacity .7s ease,transform .7s ease;direction:ltr}
+#splash.out{opacity:0;transform:scale(1.08);pointer-events:none}
+#splash .sp-rays{position:absolute;width:160vmax;height:160vmax;left:50%;top:46%;margin:-80vmax 0 0 -80vmax;background:conic-gradient(from 0deg,transparent 0 8%,rgba(255,111,139,.16) 12%,transparent 18% 33%,rgba(106,162,255,.20) 38%,transparent 44% 58%,rgba(255,111,139,.12) 63%,transparent 70% 83%,rgba(106,162,255,.16) 88%,transparent 94%);animation:spRays 14s linear infinite,spFade 1.2s .1s ease both;-webkit-mask:radial-gradient(circle,#000 0,transparent 55%);mask:radial-gradient(circle,#000 0,transparent 55%)}
+#splash .sp-glow{position:absolute;width:62vmin;height:62vmin;left:50%;top:46%;margin:-31vmin 0 0 -31vmin;border-radius:50%;background:radial-gradient(circle,rgba(255,111,139,.38),rgba(37,99,201,.25) 45%,transparent 70%);filter:blur(10px);animation:spGlow 3.4s ease-in-out both}
+#splash .sp-scene{position:relative;perspective:1100px;width:min(78vw,340px);height:calc(min(78vw,340px)/3.19);margin-top:-6vh}
+#splash .sp-slab{position:absolute;inset:0;transform-style:preserve-3d;animation:spFly 2.7s cubic-bezier(.16,.84,.26,1) both,spIdle 4s 2.7s ease-in-out infinite alternate}
+#splash .sp-face,#splash .sp-edge{position:absolute;inset:0;border-radius:14px;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+#splash .sp-face{background:#fff;overflow:hidden;box-shadow:0 0 40px rgba(255,255,255,.25)}
+#splash .sp-face img{width:100%;height:100%;object-fit:contain;display:block}
+#splash .sp-front{transform:translateZ(9px)}
+#splash .sp-back{transform:rotateY(180deg) translateZ(9px)}
+#splash .sp-edge{background:linear-gradient(135deg,#dfe8f7,#8fb0e8);backface-visibility:visible;-webkit-backface-visibility:visible}
+#splash .sp-front::after,#splash .sp-back::after{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 35%,rgba(255,255,255,.95) 48%,rgba(255,170,190,.55) 52%,transparent 65%);transform:translateX(-130%);animation:spGlint 1.3s 1.9s ease-in-out both}
+#splash .sp-name{margin-top:7vh;color:#eaf1ff;font-weight:800;font-size:clamp(15px,3.6vw,22px);letter-spacing:.9em;text-indent:.9em;text-transform:uppercase;opacity:0;animation:spName 1.5s 2.1s cubic-bezier(.2,.8,.2,1) forwards;text-shadow:0 0 18px rgba(106,162,255,.7)}
+#splash .sp-sub{margin-top:8px;color:#9db5de;font-size:12px;opacity:0;animation:spFade 1s 2.6s ease forwards;font-family:var(--font)}
+#splash .sp-bar{position:absolute;bottom:9vh;width:min(46vw,200px);height:3px;border-radius:3px;background:rgba(255,255,255,.14);overflow:hidden}
+#splash .sp-bar i{display:block;height:100%;width:100%;background:linear-gradient(90deg,#6aa2ff,#ff6f8b);transform:translateX(-100%);animation:spBar 3.1s .2s ease-in-out forwards}
+@keyframes spFly{0%{transform:translate3d(0,0,-1400px) rotateY(-720deg) rotateX(24deg) scale(.5);opacity:0}18%{opacity:1}100%{transform:translate3d(0,0,0) rotateY(0) rotateX(0) scale(1);opacity:1}}
+@keyframes spIdle{from{transform:rotateY(-9deg) rotateX(3deg)}to{transform:rotateY(9deg) rotateX(-3deg)}}
+@keyframes spGlint{to{transform:translateX(130%)}}
+@keyframes spName{from{opacity:0;letter-spacing:1.6em;filter:blur(6px)}to{opacity:1;letter-spacing:.9em;filter:none}}
+@keyframes spFade{from{opacity:0}to{opacity:1}}
+@keyframes spBar{to{transform:translateX(0)}}
+@keyframes spRays{to{transform:rotate(360deg)}}
+@keyframes spGlow{0%{opacity:0;transform:scale(.5)}60%{opacity:1}100%{opacity:.85;transform:scale(1)}}
+@media (prefers-reduced-motion:reduce){#splash .sp-slab,#splash .sp-rays{animation:none!important}#splash .sp-name,#splash .sp-sub{animation-duration:.4s;animation-delay:0s}}
